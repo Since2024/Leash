@@ -22,6 +22,7 @@ custom-panic = []
 [dependencies]
 anchor-lang = "1.0.0"
 anchor-spl = { version = "1.0.0", features = ["token_2022", "associated_token"] }
+leash-program = { version = "0.1.0", path = "../leash-program", default-features = false, features = ["cpi"] }
 spl-pod = "0.7.3"
 spl-tlv-account-resolution = "0.11.1"
 spl-transfer-hook-interface = "2.1.0"
