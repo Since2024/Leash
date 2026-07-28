@@ -1,0 +1,23 @@
+{
+  "name": "@leash/cli",
+  "version": "0.1.0",
+  "description": "leash mint / attenuate / spend / revoke / watch / redeem / init",
+  "license": "MIT",
+  "bin": {
+    "leash": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@leash/sdk": "file:../sdk/ts",
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/web3.js": "^1.98.4",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  }
+}
