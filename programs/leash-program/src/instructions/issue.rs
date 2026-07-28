@@ -8,7 +8,7 @@ use crate::error::LeashError;
 use crate::state::Capability;
 
 /// Principal deposits `cap` real-USDC-like tokens into the vault and receives a root
-/// Capability (parent = None, depth = 0, spent = 0, committed_to_children = 0,
+/// Capability (parent = Pubkey::default(), depth = 0, spent = 0, committed_to_children = 0,
 /// revoked = false), plus `cap` units of leash-wrapped-USD minted to a fresh token
 /// account they hold directly.
 ///
@@ -126,7 +126,8 @@ pub fn issue_handler(
     // 4. Initialize the root Capability.
     let capability = &mut ctx.accounts.capability;
     capability.owner = ctx.accounts.principal.key();
-    capability.parent = None;
+    capability.parent = Pubkey::default(); // root: no parent (state.rs — not Option<Pubkey>)
+    capability.ancestors = [Pubkey::default(); crate::constants::ANCESTOR_SLOTS]; // root: no ancestors
     capability.token_account = ctx.accounts.capability_token_account.key();
     capability.cap = cap;
     capability.spent = 0;
