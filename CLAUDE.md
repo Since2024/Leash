@@ -5,21 +5,30 @@ Token-2022 Transfer Hook — not by a server, dashboard, or the agent's own code
 [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md). Original pitch: [leash.txt](leash.txt).
 
 **Read docs/BUILD_PLAN.md before writing any instruction logic.** It defines the six
-non-negotiable properties (§2), the data model (§3), the exact instruction set (§4), and
-four unvalidated design decisions — D1-D4 (§5) — that must be spiked and confirmed in
-Week 1 before anything else is built on top of them. Do not treat D1-D4 as settled; they
-are the first thing to test, not an assumption to code against.
+non-negotiable properties (§2), the data model (§3), and the exact instruction set (§4).
+D1-D4 (§5) were spiked in Week 1 and all hold — see "Week 1 spike results" in §5 for what
+that spike actually found (it wasn't clean: a `fallback`-dispatch requirement, a PDA
+rent-funding bug, real dependency version conflicts, and a Solana CLI upgrade were all
+necessary, not just the four original questions). Read those findings before touching
+`leash-hook` — they change how `initialize_extra_account_meta_list` and the fallback path
+must be written, not just whether the approach works at all.
 
 ## Current state
 
-Scaffolding only. Two Anchor programs exist as typed stubs (`Accounts` structs + `todo!()`
-handlers) matching BUILD_PLAN.md §3/§4 exactly — no business logic yet:
+Week 1 spike complete and passing (`programs/leash-hook/tests/spike_d1_d4.rs`, run via
+`cargo test -p leash-hook --test spike_d1_d4`). `leash-program`'s four instructions
+(`issue`/`attenuate`/`revoke`/`redeem`) are still typed stubs with `todo!()` bodies —
+Week 2's job. `leash-hook` has real, working (if minimal) logic: it registers an extra
+account and, on a real Token-2022 transfer, reads source/destination and logs — proven
+against a built `.so`, not just compiled. No cap/expiry/allowlist/revoked enforcement yet;
+that's Week 3, once D4's fixed-placeholder extra account is replaced with a real,
+per-source Capability PDA lookup.
 
-- `programs/leash-program` — Capability state; `issue` / `attenuate` / `revoke` / `redeem`.
-- `programs/leash-hook` — Token-2022 TransferHook `execute`; this is where cap/expiry/
-  allowlist/revoked enforcement will live, on every spend.
-
-Workspace compiles (`cargo check --workspace`) as of scaffold time. Nothing is deployed.
+Solana CLI upgraded to Agave 4.1.1 / platform-tools v1.54 during the spike (the
+originally-installed 1.18.26 couldn't build the current dependency tree at all). Workspace
+compiles (`cargo check --workspace`) and `leash-hook` builds to a real `.so`
+(`cargo-build-sbf --manifest-path programs/leash-hook/Cargo.toml`). Nothing is deployed to
+devnet or mainnet.
 
 ## Explicit non-goals for this phase
 
@@ -30,7 +39,7 @@ BUILD_PLAN.md §9 and §12 — these are real, later, and deliberately not start
 
 ## Milestones (BUILD_PLAN.md §7)
 
-Week 1 spike (D1-D4) → Week 2 issue/redeem → Week 3 attenuate + hook spend-path →
+Week 1 spike (D1-D4) ✅ → Week 2 issue/redeem → Week 3 attenuate + hook spend-path →
 Week 4 ancestor-chain + fuzz suite → Week 5 SDK/CLI → Week 6 demo + grant submission.
 
 ## Repo layout
