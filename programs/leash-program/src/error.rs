@@ -18,4 +18,6 @@ pub enum LeashError {
     Unauthorized,
     #[msg("allowlist exceeds MAX_ALLOWLIST_LEN")]
     AllowlistTooLarge,
+    #[msg("only leash-hook may record a spend")]
+    UnauthorizedCaller,
 }
