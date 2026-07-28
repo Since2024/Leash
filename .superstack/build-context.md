@@ -8,7 +8,7 @@
 |-------|-------|
 | Template | on-chain-program (hand-scaffolded, not a single starter repo — see below) |
 | Architecture pattern | On-chain Program (Pattern 4: two-program Anchor workspace, no frontend) |
-| Completed at | 2026-07-28T17:10:00+05:45 |
+| Completed at | 2026-07-28T18:05:00+05:45 |
 | Solana CLI | Agave 4.1.1 / platform-tools v1.54 (upgraded from 1.18.26 during the Week 1 spike — the old toolchain's rustc 1.75.0 couldn't build the current dependency tree) |
 
 ### Skills Installed
@@ -32,7 +32,7 @@
 | Field | Value |
 |-------|-------|
 | MVP complete | No |
-| Tests passing | N/A — no tests written yet, only placeholder READMEs in tests/integration and tests/invariants |
+| Tests passing | Yes — 2/2 (leash-hook's D1-D4 spike, leash-program's issue/redeem round trip) |
 | Devnet deployed | No |
 | Mainnet deployed | No |
 | Program ID | leash_program: `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk` (localnet/devnet keypair, not yet deployed) |
@@ -52,7 +52,12 @@ Second program ID: leash_hook: `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`
       see docs/BUILD_PLAN.md §5 "Week 1 spike results" for the five concrete findings
       this surfaced (fallback dispatch, PDA rent-funding bug, dependency version pinning,
       Solana CLI upgrade) (2026-07-28T17:10:00+05:45)
-- [ ] Week 2: issue + redeem instructions
+- [x] Week 2: real `issue` (deposit real-asset -> vault, mint wrapped units, init root
+      Capability) and `redeem` (burn wrapped units, withdraw from vault) — proven with a
+      full deposit->issue->redeem round-trip LiteSVM test, all balances and Capability
+      fields verified. Uses a single shared PDA (`AUTHORITY_SEED`) as both the wrapped
+      mint's mint authority and the vault's token-account authority
+      (2026-07-28T18:05:00+05:45)
 - [ ] Week 3: attenuate + hook spend-path enforcement
 - [ ] Week 4: ancestor-chain revocation + invariant/fuzz suite
 - [ ] Week 5: TS SDK + CLI

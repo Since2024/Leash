@@ -15,20 +15,29 @@ must be written, not just whether the approach works at all.
 
 ## Current state
 
-Week 1 spike complete and passing (`programs/leash-hook/tests/spike_d1_d4.rs`, run via
-`cargo test -p leash-hook --test spike_d1_d4`). `leash-program`'s four instructions
-(`issue`/`attenuate`/`revoke`/`redeem`) are still typed stubs with `todo!()` bodies —
-Week 2's job. `leash-hook` has real, working (if minimal) logic: it registers an extra
-account and, on a real Token-2022 transfer, reads source/destination and logs — proven
-against a built `.so`, not just compiled. No cap/expiry/allowlist/revoked enforcement yet;
-that's Week 3, once D4's fixed-placeholder extra account is replaced with a real,
-per-source Capability PDA lookup.
+Weeks 1-2 complete and passing:
 
-Solana CLI upgraded to Agave 4.1.1 / platform-tools v1.54 during the spike (the
-originally-installed 1.18.26 couldn't build the current dependency tree at all). Workspace
-compiles (`cargo check --workspace`) and `leash-hook` builds to a real `.so`
-(`cargo-build-sbf --manifest-path programs/leash-hook/Cargo.toml`). Nothing is deployed to
-devnet or mainnet.
+- `programs/leash-hook/tests/spike_d1_d4.rs` — Week 1's D1-D4 spike: a real Token-2022
+  mint with the TransferHook extension, extra-account-metas registered, a real transfer
+  confirmed (via on-chain logs) to invoke the hook.
+- `programs/leash-program/tests/week2_issue_redeem.rs` — Week 2: a full deposit -> issue
+  -> redeem round trip. `issue` deposits a real (legacy SPL Token) asset into the vault,
+  mints wrapped units to a fresh capability token account the principal holds directly,
+  and initializes the root `Capability`. `redeem` burns wrapped units and withdraws the
+  real asset back out. All balances and `Capability` fields verified, not just "it didn't
+  error." A single shared PDA (`AUTHORITY_SEED`) acts as both the wrapped mint's mint
+  authority and the vault's token-account authority.
+
+Still stub: `attenuate` and `revoke` (`todo!()`), and — the actual point of the project —
+`leash-hook` still has **zero enforcement logic**. It registers an extra account and logs
+on transfer, but checks no cap, no expiry, no allowlist, no revoked flag. That's Week 3,
+once D4's fixed-placeholder extra account is replaced with a real, per-source Capability
+PDA lookup.
+
+Solana CLI is Agave 4.1.1 / platform-tools v1.54 (upgraded during Week 1 — the original
+1.18.26 couldn't build the current dependency tree at all). Workspace compiles (`cargo
+check --workspace`), both programs build to real `.so` files via `cargo-build-sbf
+--manifest-path programs/<name>/Cargo.toml`. Nothing is deployed to devnet or mainnet.
 
 ## Explicit non-goals for this phase
 
@@ -39,7 +48,7 @@ BUILD_PLAN.md §9 and §12 — these are real, later, and deliberately not start
 
 ## Milestones (BUILD_PLAN.md §7)
 
-Week 1 spike (D1-D4) ✅ → Week 2 issue/redeem → Week 3 attenuate + hook spend-path →
+Week 1 spike (D1-D4) ✅ → Week 2 issue/redeem ✅ → Week 3 attenuate + hook spend-path →
 Week 4 ancestor-chain + fuzz suite → Week 5 SDK/CLI → Week 6 demo + grant submission.
 
 ## Repo layout

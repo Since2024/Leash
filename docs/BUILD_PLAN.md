@@ -1,4 +1,4 @@
-# Leash — Build Plan (Phase 1: Grant-Scoped MVP)
+# Leash — Build Plan (Phase 1: MVP)
 
 Source pitch: `../leash.txt`. This document narrows that pitch into something one
 person can actually build and demo in about a month, using AI-agent-assisted
@@ -240,8 +240,8 @@ leash/
 
 | Week | Deliverable | Maps to grant KPI |
 |---|---|---|
-| 1 | Spike D1-D4 resolved with working devnet transactions (mint w/ hook attached, a stub hook that logs and passes, a throwaway mint-authority test). No product logic yet — just proof the primitives compose. | "Architecture validated" |
-| 2 | `Capability` account + `issue` + `redeem` instructions. Devnet: deposit USDC, get a wrapped budget, redeem it back. | "Program issues and redeems a real budget" |
+| 1 ✅ | Spike D1-D4 resolved with working devnet transactions (mint w/ hook attached, a stub hook that logs and passes, a throwaway mint-authority test). No product logic yet — just proof the primitives compose. | "Architecture validated" |
+| 2 ✅ | `Capability` account + `issue` + `redeem` instructions. Devnet: deposit USDC, get a wrapped budget, redeem it back. | "Program issues and redeems a real budget" |
 | 3 | `attenuate` + the real `leash-hook` spend-path logic (cap/expiry/allowlist/revoked, single ancestor level). | "Spend is enforced on-chain, not in app code" |
 | 4 | Ancestor-chain checks to `MAX_DEPTH`, full invariant/fuzz suite for all six lines in §2, published as an explicit checklist in the repo. | "Invariants fuzz-tested" |
 | 5 | Minimal TS SDK + CLI (`leash mint --budget X --expires Y --allow Z`). | "10-minute time-to-first-value" |
@@ -255,6 +255,33 @@ field.
 with a $5 capability is hard-stopped by the token program at $5.01, and a
 revoked capability rejects its next spend within one confirmed transaction" —
 concrete, binary, checkable by a reviewer without trusting your word for it.
+
+### Week 2 results (2026-07-28) — issue and redeem are real, not stubs
+
+`programs/leash-program/tests/week2_issue_redeem.rs` proves a full round trip
+against actual instructions: `issue` transfers a deposit into the vault
+(legacy SPL Token — real USDC isn't Token-2022, per D1), creates the
+capability's wrapped-token account (an ATA the principal holds directly, not
+something leash-program gates access to), mints the wrapped units via a
+program-authority PDA, and initializes the root `Capability`. `redeem` burns
+wrapped units and withdraws the deposit back out, signed by the same PDA. All
+four token balances and every `Capability` field are asserted, not just "the
+transaction didn't error."
+
+One design point worth recording: `issue`/`redeem` never touch a *transfer*
+of the wrapped mint — only `mint_to`/`burn` — so `leash-hook`'s TransferHook
+is never invoked by either instruction, and Week 2's test doesn't need
+`leash-hook` loaded at all. The hook only fires on `spend` (Week 3). A single
+shared PDA (`AUTHORITY_SEED`) serves as both the wrapped mint's mint
+authority and the vault's token-account authority — one authority instead of
+two, since nothing here requires them to be separate for the MVP.
+
+Note what's still fully open: the wrapped mint and vault are still created
+off-chain/client-side (as in the Week 1 spike), not via an on-chain
+"initialize deployment" instruction — `issue`/`redeem` operate against an
+already-configured deployment. That's a reasonable MVP simplification, not a
+gap to silently forget: a real deployment needs that setup scripted
+somewhere before Week 5's CLI can `leash mint` against it.
 
 ## 8. Test & fuzz plan
 
