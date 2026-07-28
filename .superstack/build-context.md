@@ -8,7 +8,8 @@
 |-------|-------|
 | Template | on-chain-program (hand-scaffolded, not a single starter repo — see below) |
 | Architecture pattern | On-chain Program (Pattern 4: two-program Anchor workspace, no frontend) |
-| Completed at | 2026-07-28T16:20:00+05:45 |
+| Completed at | 2026-07-28T17:10:00+05:45 |
+| Solana CLI | Agave 4.1.1 / platform-tools v1.54 (upgraded from 1.18.26 during the Week 1 spike — the old toolchain's rustc 1.75.0 couldn't build the current dependency tree) |
 
 ### Skills Installed
 
@@ -46,7 +47,11 @@ Second program ID: leash_hook: `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`
 - [x] Anchor workspace scaffolded: two programs (leash-program, leash-hook), Capability
       state, issue/attenuate/revoke/redeem stubs, transfer-hook execute stub — `cargo
       check --workspace` passes clean, no logic implemented yet (2026-07-28T16:20:00+05:45)
-- [ ] Week 1 spike: validate D1-D4 (docs/BUILD_PLAN.md §5)
+- [x] Week 1 spike: D1-D4 all validated against a real LiteSVM test (mint w/ TransferHook,
+      real transfer_checked, hook fires and logs source/destination, mint_to for D3) —
+      see docs/BUILD_PLAN.md §5 "Week 1 spike results" for the five concrete findings
+      this surfaced (fallback dispatch, PDA rent-funding bug, dependency version pinning,
+      Solana CLI upgrade) (2026-07-28T17:10:00+05:45)
 - [ ] Week 2: issue + redeem instructions
 - [ ] Week 3: attenuate + hook spend-path enforcement
 - [ ] Week 4: ancestor-chain revocation + invariant/fuzz suite
