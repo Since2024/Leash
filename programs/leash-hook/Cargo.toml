@@ -21,10 +21,26 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "1.0.0"
-anchor-spl = { version = "1.0.0", features = ["token_2022"] }
+anchor-spl = { version = "1.0.0", features = ["token_2022", "associated_token"] }
+spl-pod = "0.7.3"
+spl-tlv-account-resolution = "0.11.1"
+spl-transfer-hook-interface = "2.1.0"
 # TODO(week 1, D4): confirm whether anchor-spl's transfer-hook support is sufficient or
 # whether the raw `spl-transfer-hook-interface` crate is needed directly for
 # ExtraAccountMetaList handling (ancestor-chain accounts). Resolve before Week 3.
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+
+[dev-dependencies]
+futures = "0.3.33"
+# Pinned to match what anchor-lang 1.1.2 / anchor-spl 1.1.2 already resolve internally
+# (same versions as leash-program's own dev-dependencies) — letting `cargo add` pick
+# its own latest versions here pulled in a second, incompatible generation of
+# solana-instruction/solana-pubkey/wincode and cost real time to trace down (see
+# docs/BUILD_PLAN.md §5 spike notes). Pin first, add second.
+litesvm = "0.10.0"
+solana-keypair = "3.0.1"
+solana-message = "3.0.1"
+solana-signer = "3.0.0"
+solana-transaction = "3.0.2"
