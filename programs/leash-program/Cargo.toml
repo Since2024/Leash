@@ -21,9 +21,10 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "1.0.0"
-# anchor-spl adds Token-2022 support (mint/token-account helpers, extension access).
-# Kept minimal until Week 1's D1-D4 spike confirms which anchor-spl features we actually need.
-anchor-spl = { version = "1.0.0", features = ["token_2022"] }
+# anchor-spl adds Token-2022 support (mint/token-account helpers, extension access) and,
+# via associated_token, the ATA-creation CPI issue/redeem need for the capability's
+# wrapped-token account. Confirmed working (not just plausible) during Week 1's spike.
+anchor-spl = { version = "1.0.0", features = ["token_2022", "associated_token"] }
 
 [dev-dependencies]
 litesvm = "0.10.0"
