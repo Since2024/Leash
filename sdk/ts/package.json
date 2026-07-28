@@ -1,0 +1,22 @@
+{
+  "name": "@leash/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Leash: mint/issue, attenuate, spend, revoke, watch.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "generate-idl": "cd ../../.. && anchor build --idl target/idl --idl-ts target/types && cp target/idl/leash_program.json target/idl/leash_hook.json sdk/ts/src/idl/ && cp target/types/leash_program.ts target/types/leash_hook.ts sdk/ts/src/idl/"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}
