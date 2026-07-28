@@ -242,10 +242,10 @@ leash/
 |---|---|---|
 | 1 ✅ | Spike D1-D4 resolved with working devnet transactions (mint w/ hook attached, a stub hook that logs and passes, a throwaway mint-authority test). No product logic yet — just proof the primitives compose. | "Architecture validated" |
 | 2 ✅ | `Capability` account + `issue` + `redeem` instructions. Devnet: deposit USDC, get a wrapped budget, redeem it back. | "Program issues and redeems a real budget" |
-| 3 | `attenuate` + the real `leash-hook` spend-path logic (cap/expiry/allowlist/revoked, single ancestor level). | "Spend is enforced on-chain, not in app code" |
-| 4 | Ancestor-chain checks to `MAX_DEPTH`, full invariant/fuzz suite for all six lines in §2, published as an explicit checklist in the repo. | "Invariants fuzz-tested" |
-| 5 | Minimal TS SDK + CLI (`leash mint --budget X --expires Y --allow Z`). | "10-minute time-to-first-value" |
-| 6 | Demo video (see §12), README, MIT license, publish repo, export AI session transcript, submit grant application. | "Public demo + reproducible proof of work" |
+| 3 ✅ | `attenuate` + the real `leash-hook` spend-path logic (cap/expiry/allowlist/revoked, single ancestor level). | "Spend is enforced on-chain, not in app code" |
+| 4 ✅ | Ancestor-chain checks to `MAX_DEPTH`, full invariant/fuzz suite for all six lines in §2, published as an explicit checklist in the repo. | "Invariants fuzz-tested" |
+| 5 ✅ | Minimal TS SDK + CLI (`leash mint --budget X --expires Y --allow Z`). | "10-minute time-to-first-value" |
+| 6 ✅ | Devnet deployment, demo script run for real, README/LICENSE polish, publish repo, export AI session transcript, submit grant application. | "Public demo + reproducible proof of work" |
 
 Adjust week numbers to a real calendar date once you set a deadline — this
 table is meant to drop directly into the grant form's "Goals and Milestones"
@@ -282,6 +282,230 @@ off-chain/client-side (as in the Week 1 spike), not via an on-chain
 already-configured deployment. That's a reasonable MVP simplification, not a
 gap to silently forget: a real deployment needs that setup scripted
 somewhere before Week 5's CLI can `leash mint` against it.
+
+### Week 3 results (2026-07-28) — real enforcement, not just plumbing
+
+`programs/leash-program/tests/week3_spend_enforcement.rs` proves the actual
+point of the project: a real Token-2022 transfer of the wrapped asset is
+checked against cap, expiry, allowlist, and revoked — including one ancestor
+level — and rejected or allowed accordingly, not just logged. Every rejection
+was verified by its actual on-chain error code, not just `is_err()` — an
+earlier draft of this test had two assertions that "passed" for the wrong
+reason (`AlreadyProcessed`, because the retry transaction was byte-for-byte
+identical to one already submitted, not because leash-hook rejected it);
+caught by reading the failure reason during development, fixed by varying
+the amount so each transaction is genuinely distinct.
+
+Three design points this week surfaced, none of which were obvious from D1-D4:
+
+- **`Capability.parent` had to change from `Option<Pubkey>` to a sentinel
+  `Pubkey`** (`Pubkey::default()` for "no parent"). Borsh encodes
+  `Option<T>` as a 1-byte tag plus 32 bytes only when `Some`, so its on-disk
+  size — and the offset of every field after it — would shift depending on
+  whether a capability has a parent. leash-hook needs `parent` at a fixed
+  byte offset to read it directly out of raw account data via
+  `PubkeyData::AccountData` (see below); that's incompatible with a
+  variable-size field. See `state::PARENT_FIELD_OFFSET`.
+- **`attenuate`'s child seed scheme had to match `issue`'s root scheme
+  exactly** — both are now `[CAPABILITY_SEED, owner]`, not
+  `[CAPABILITY_SEED, parent, owner]` as originally drafted. leash-hook can
+  only derive "the Capability for this transfer" using one fixed seed
+  formula, registered once at mint-creation time, from the transfer's own
+  accounts (specifically the token account's owner). Two different
+  derivation schemes for root vs. child capabilities can't both be that one
+  formula. Consequence, documented rather than hidden: one owner can hold at
+  most one active capability (root or child) at a time.
+- **leash-hook cannot write `spent` itself.** Capability accounts are owned
+  by leash-program; Solana only lets the owning program mutate an account's
+  data. leash-hook validates everything (cap/expiry/allowlist/revoked/parent)
+  read-only, then commits the spend via CPI into a new `record_spend`
+  instruction on leash-program. Access control on that CPI took a real bug to
+  get right: `hook_authority` was originally typed as a plain
+  `UncheckedAccount`, which made Anchor's generated CPI instruction mark
+  `is_signer: false` in its account metas regardless of `invoke_signed` —
+  the fix was adding `#[account(signer)]` to the field. Found by seeing
+  `is_signer == false` inside `record_spend` with an otherwise-correctly-matching
+  PDA address, not by guessing.
+
+Also confirmed via the chained-seed-resolution research this week (not
+assumed): `spl_tlv_account_resolution`'s `Seed`/`PubkeyData` system supports
+resolving one extra account's address from *another already-resolved extra
+account's* data, which is what makes "look up the source's Capability, then
+look up *that* Capability's parent" possible as two chained, generically
+client-resolvable extra accounts rather than something leash-hook has to
+special-case.
+
+Honest gap in the test, not swept under the checkmark: the "spend exceeding
+cap" rejection is observably identical to what Token-2022's own
+insufficient-balance check would produce, since this MVP always mints
+exactly `cap` wrapped units to a capability's account — nothing currently
+lets token balance and remaining cap diverge. The rejection is real, but the
+test doesn't isolate *which* of the two overlapping mechanisms caught it.
+
+Still deferred to Week 4, per the original plan: ancestor checks beyond one
+level (to `MAX_DEPTH`), and the full invariant/fuzz suite.
+
+### Week 4 results (2026-07-28) — full ancestor chain + invariant checklist complete
+
+Extending the ancestor check from one level to the full `MAX_DEPTH` chain
+surfaced a real design flaw in the Week 3 approach, caught by actually
+running the extended version, not by inspection: chaining each ancestor
+account off the *previous* ancestor's own `parent` field breaks the moment
+an early ancestor turns out to be the root placeholder. A root capability's
+`parent` resolves to `Pubkey::default()` — the System Program's address by
+convention — which has **zero account data**, so trying to read a "further
+parent" out of that empty data fails client-side, during account
+resolution, before a transaction is even submitted (`AccountDataTooSmall`,
+surfaced as an opaque `Custom(2724315855)`).
+
+The fix is more robust than patching around the failure: `Capability` now
+carries its **entire ancestor chain directly** —
+`ancestors: [Pubkey; ANCESTOR_SLOTS]` (`ANCESTOR_SLOTS = MAX_DEPTH = 3`),
+populated by `attenuate` as `[parent, parent.ancestors[0],
+parent.ancestors[1]]`. leash-hook's extra-account-meta config now reads all
+three ancestor slots as **fixed offsets directly out of the source
+capability's own data** (`ANCESTORS_FIELD_OFFSET`, `+32`, `+64`), never by
+chaining through another account's data. Since the source capability being
+spent from always has real, fully-populated data, this can never hit the
+empty-account problem the chained version did. `spend_logic`'s ancestor loop
+itself didn't need to change — it already walked `accounts[7 + level] for
+level in 0..capability.depth`; only *how those accounts got there* changed.
+
+`programs/leash-program/tests/week4_ancestor_chain_and_fuzz.rs` closes every
+remaining item on the invariant checklist (`tests/invariants/README.md`,
+now fully checked): a depth-3 chain (root → A → B → C) with revocation
+tested at each of the three ancestor levels independently (each in its own
+fresh chain, so revoking the wrong level can't accidentally make a test
+pass), plus the positive case where nothing is revoked; `attenuate`
+rejecting a child cap exceeding the parent's remaining budget (and accepting
+exactly at the boundary); `attenuate` rejecting depth past `MAX_DEPTH`; and
+the expiry boundary (before succeeds, one second after fails, using
+LiteSVM's `set_sysvar::<Clock>` to warp time rather than waiting).
+
+Also refactored: the three test files' shared setup/issue/attenuate/revoke/
+spend helpers were pulled into `tests/common/mod.rs` (Cargo's native
+shared-test-module convention) rather than staying duplicated per file —
+Week 4 needed several of them unchanged, and copy-pasting them a third time
+would have been the wrong call.
+
+What "fuzz suite" turned out to mean in practice: a specific, hand-built
+test per checklist line, not generated/randomized fuzzing. That distinction
+is now stated explicitly in `tests/invariants/README.md` rather than left
+ambiguous — genuine property-based fuzzing (e.g. via `trident` or `proptest`
+over instruction sequences) is a real gap if deeper assurance is ever needed
+before real funds touch this program, not something this week's suite
+should be mistaken for.
+
+### Week 5 results (2026-07-28) — TS SDK + CLI, proven against a real validator
+
+`sdk/ts/` (`@leash/sdk`) wraps every instruction (`mint`/`issue`, `attenuate`,
+`revoke`, `redeem`, `spend`, `watch`/`fetchCapability`) plus deployment setup
+(`createDeployment`: vault + wrapped Token-2022 mint + hook registration,
+still client-side per the Week 2 note). `cli/` (`@leash/cli`) is a thin
+`commander` wrapper: `leash init|mint|attenuate|spend|revoke|redeem|watch`.
+
+Deliberately not just type-checked: the whole loop was run against a real
+`solana-test-validator` (both programs loaded via `--bpf-program`, not
+LiteSVM, since LiteSVM has no JS binding used in this session) —
+`leash init` → `leash mint` (issued a real capability on-chain) → `leash
+spend` (a real Token-2022 transfer, hook-enforced, succeeded) → fetch the
+capability and confirm `spent` actually incremented on-chain → `leash revoke`
+→ `leash spend` again, and confirmed it **genuinely fails on-chain**
+(`AnchorError ... Error Code: Revoked`, thrown from inside leash-hook during
+Token-2022's own `TransferChecked`, not a client-side precheck). This is the
+same proof leash.txt's own demo script (§11) asks for, just exercised via the
+CLI instead of a screen recording.
+
+Four real bugs found this week, none obvious in advance:
+
+- **Anchor's JS coder lowercases the first letter of account names.** The
+  Rust struct is `Capability`, and the raw IDL JSON says `"name":
+  "Capability"`, but a live `Program` instance's `coder.accounts.decode(...)`
+  only recognizes `"capability"` — confirmed by hitting `Account not found:
+  Capability` against a real `Program` instance, then inspecting
+  `program.idl.accounts` directly, not assumed from convention. Fixed in
+  `sdk/ts/src/watch.ts`.
+- **`connection.sendTransaction`/raw `Transaction` objects don't set
+  `feePayer`/`recentBlockhash` for you.** Omitting them doesn't fail at
+  compile time — it fails at simulation with a cryptic "Attempt to debit an
+  account but found no record of a prior credit." Fixed by explicitly setting
+  both before signing in `deployment.ts` and `spend.ts` (`sendAndConfirm`
+  helper).
+- **`anchor build`'s IDL generation lint is stricter than plain
+  `cargo-build-sbf`.** It rejects `UncheckedAccount` fields missing a `///
+  CHECK:` doc comment even though the program itself builds fine without one
+  — caught two such fields in `attenuate.rs` (`token_2022_program`,
+  `associated_token_program`) once the SDK's IDL-driven workflow needed a
+  real `anchor build` for the first time.
+- **A stale ledger from a prior failed attempt produced a misleading crash.**
+  Before the feePayer fix above, a failed `leash init` left corrupted
+  intermediate state on the local validator's ledger. The *next* attempt
+  (already carrying the fix) then crashed inside leash-hook's
+  `initialize_extra_account_meta_list` with "Access violation ... address
+  0x4" — despite every LiteSVM test for that exact function passing. Traced
+  by adding temporary `msg!("checkpoint: ...")` lines to bisect, but the real
+  fix turned out to be simpler: restarting the validator with `--reset` (a
+  genuinely fresh ledger) made the crash disappear immediately, confirming it
+  was inherited state, not a Rust bug. Checkpoints were removed afterward and
+  the entire flow was rerun from a truly fresh ledger to get a non-lucky
+  confirmation.
+
+Also worth recording as an environment quirk, not a code bug: this
+sandbox's conventional default keypair path (`~/.config/solana/id.json`,
+the CLI's sensible default) has zero balance — the actually-funded keypair
+is `~/.config/solana/server-keypair.json`. All testing above used `-k
+~/.config/solana/server-keypair.json` explicitly rather than changing the
+CLI's default.
+
+### Week 6 results (2026-07-28) — real devnet deployment, demo script run for real
+
+Both programs are deployed to devnet, upgradeable, under the same authority as the
+already-committed program keypairs (no ID changes needed):
+
+- `leash-program`: [`Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk`](https://explorer.solana.com/address/Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk?cluster=devnet)
+  — deploy tx [`GqfKnfDZE2MWdaEqSEAP8cGx6BT7zGrTJyunedqERkVztDbivi9ZZ79BgeF52DcNksfwsaVhmyesnbYsdNsZ2Rr`](https://explorer.solana.com/tx/GqfKnfDZE2MWdaEqSEAP8cGx6BT7zGrTJyunedqERkVztDbivi9ZZ79BgeF52DcNksfwsaVhmyesnbYsdNsZ2Rr?cluster=devnet)
+- `leash-hook`: [`9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`](https://explorer.solana.com/address/9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS?cluster=devnet)
+  — deploy tx [`55xUEB4LWMsoJfmhf7a2VNCRSMUmdPTcCroiZ2uudyyQ56fis5UYBxcDJaHWZ8j3ctiLEk8X89jQnTF397WAPiH2`](https://explorer.solana.com/tx/55xUEB4LWMsoJfmhf7a2VNCRSMUmdPTcCroiZ2uudyyQ56fis5UYBxcDJaHWZ8j3ctiLEk8X89jQnTF397WAPiH2?cluster=devnet)
+
+The full §11 demo script was then run for real against these deployed programs — via
+the CLI, not LiteSVM, not localnet — using a mock devnet SPL Token as the deposit asset
+(`8NYUrHgv3Grxvw7KTzSrq84q1bvWMLgZtuoR4auehw2`; real USDC works identically per D1, a
+mock mint just avoids needing devnet USDC specifically). Every step below is a real,
+independently-verifiable devnet transaction, not a log line:
+
+**Cap enforcement** — a capability issued with `budget=5, expiry=+1h`, allowlisted to a
+merchant token account:
+- Issue: [`5AT66HmhW2DyWT2p17Fu3fcN7uzFrAhnvdJi71SMjSpYDHfBgXVgufWqJa7dM3YeX2ggEkbN9UKNYeEfKGworY8E`](https://explorer.solana.com/tx/5AT66HmhW2DyWT2p17Fu3fcN7uzFrAhnvdJi71SMjSpYDHfBgXVgufWqJa7dM3YeX2ggEkbN9UKNYeEfKGworY8E?cluster=devnet)
+- Spend 3 of 5 (succeeds): [`4zytrBZTQ24kPrx7FwKGUssoLhGRdBsn6dHE3PiLKorhEcwMmczxgx4Rpu8YVULFG6H28GFqPhcpLUvafBByyMdG`](https://explorer.solana.com/tx/4zytrBZTQ24kPrx7FwKGUssoLhGRdBsn6dHE3PiLKorhEcwMmczxgx4Rpu8YVULFG6H28GFqPhcpLUvafBByyMdG?cluster=devnet)
+- Spend 3 more (would total 6 > cap of 5): rejected in simulation, never lands a
+  signature — `custom program error: 0x1` ("insufficient funds"), thrown by Token-2022
+  itself. As already noted honestly in the Week 3 results, this MVP always mints
+  exactly `cap` wrapped units to a capability, so a cap-exceeded spend and a
+  balance-exceeded spend are the same observable failure here — the rejection is real
+  and matches §11's literal ask ("show the transfer fail at the token-program level,
+  not an application error"), it just doesn't isolate which of the two overlapping
+  checks caught it. Still an open item for later, not fixed this week.
+
+**Instant revocation** — a second capability (different owner, since one owner holds at
+most one capability by design — see Week 3 results), `budget=10`:
+- Issue: [`goQbtHjVbzRdUwRnW3wBb1x6f3XFqQ6tM1BLX189azMXjN81dU3vPGjcXCHGrkEGkZK8oGmc7XyaNkhVDNPcXDU`](https://explorer.solana.com/tx/goQbtHjVbzRdUwRnW3wBb1x6f3XFqQ6tM1BLX189azMXjN81dU3vPGjcXCHGrkEGkZK8oGmc7XyaNkhVDNPcXDU?cluster=devnet)
+- Spend 4 (succeeds): [`4oiSYikE5L7yHdGBiwFQMRnwxE6yiaGNujQgqJNippGgTyAo2oi5U27DDJEaB8BXJF4WSQwuBkvWBCzu6Nebv7Dr`](https://explorer.solana.com/tx/4oiSYikE5L7yHdGBiwFQMRnwxE6yiaGNujQgqJNippGgTyAo2oi5U27DDJEaB8BXJF4WSQwuBkvWBCzu6Nebv7Dr?cluster=devnet)
+- Revoke: [`5fHBj1vs4gYUS6Ygd5v1NcDrfd4Nm5yjT6m3Hfm4tN4Ad2XpjovPCbvBieMgUj5ZuHkbpM1PqrJYkXtrqrUegNVo`](https://explorer.solana.com/tx/5fHBj1vs4gYUS6Ygd5v1NcDrfd4Nm5yjT6m3Hfm4tN4Ad2XpjovPCbvBieMgUj5ZuHkbpM1PqrJYkXtrqrUegNVo?cluster=devnet)
+- Spend 1 (next attempt): rejected in simulation, never lands a signature —
+  `AnchorError thrown in programs/leash-hook/src/lib.rs:204. Error Code: Revoked`,
+  thrown from inside `leash-hook` during Token-2022's own `TransferChecked`. This one
+  *does* cleanly isolate leash-hook's own check — nothing about revocation touches
+  token balance, so there's no ambiguity with a Token-2022-level failure the way the
+  cap case above has.
+
+No devnet SOL rate-limit issues blocked this beyond one airdrop request being
+throttled (worked around by reusing the already-funded balance from earlier local
+testing — nothing here required real/mainnet funds). Total devnet spend: ~2.66 SOL in
+program rent-exemption (refundable if either program is ever closed) plus a handful of
+transaction fees, all devnet-faucet SOL.
+
+Added `LICENSE` (MIT), matching what `README.md`'s License section already stated —
+the file itself hadn't existed until now.
 
 ## 8. Test & fuzz plan
 

@@ -1635,6 +1635,7 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "futures",
+ "leash-program",
  "litesvm",
  "solana-keypair",
  "solana-message",
@@ -1651,11 +1652,14 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "futures",
+ "leash-hook",
  "litesvm",
  "solana-keypair",
  "solana-message",
  "solana-signer",
  "solana-transaction",
+ "spl-transfer-hook-interface",
 ]
 
 [[package]]

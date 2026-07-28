@@ -8,7 +8,7 @@
 |-------|-------|
 | Template | on-chain-program (hand-scaffolded, not a single starter repo — see below) |
 | Architecture pattern | On-chain Program (Pattern 4: two-program Anchor workspace, no frontend) |
-| Completed at | 2026-07-28T18:05:00+05:45 |
+| Completed at | 2026-07-28T20:15:00+05:45 |
 | Solana CLI | Agave 4.1.1 / platform-tools v1.54 (upgraded from 1.18.26 during the Week 1 spike — the old toolchain's rustc 1.75.0 couldn't build the current dependency tree) |
 
 ### Skills Installed
@@ -31,14 +31,14 @@
 
 | Field | Value |
 |-------|-------|
-| MVP complete | No |
-| Tests passing | Yes — 2/2 (leash-hook's D1-D4 spike, leash-program's issue/redeem round trip) |
-| Devnet deployed | No |
+| MVP complete | Yes (all 6 weeks done; only the manual grant-application submission remains) |
+| Tests passing | Yes — 11/11 Rust across the workspace (issue/redeem round trip; attenuate + spend enforcement incl. one ancestor level; full MAX_DEPTH ancestor chain + attenuate boundaries + expiry, 7 tests), plus a full TS SDK/CLI loop proven end-to-end twice: against a local solana-test-validator, then for real against devnet (init/mint/spend/watch/revoke/spend-fails) |
+| Devnet deployed | Yes — both programs, 2026-07-28 |
 | Mainnet deployed | No |
-| Program ID | leash_program: `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk` (localnet/devnet keypair, not yet deployed) |
+| Program ID | leash_program: `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk` (deployed to devnet) |
 | Mainnet program ID | — |
-| Deployment date | — |
-| RPC provider | — |
+| Deployment date | 2026-07-28 |
+| RPC provider | `https://api.devnet.solana.com` (public devnet RPC) |
 
 Second program ID: leash_hook: `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`
 
@@ -58,11 +58,48 @@ Second program ID: leash_hook: `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`
       fields verified. Uses a single shared PDA (`AUTHORITY_SEED`) as both the wrapped
       mint's mint authority and the vault's token-account authority
       (2026-07-28T18:05:00+05:45)
-- [ ] Week 3: attenuate + hook spend-path enforcement
-- [ ] Week 4: ancestor-chain revocation + invariant/fuzz suite
-- [ ] Week 5: TS SDK + CLI
-- [ ] Week 6: demo video + grant submission
+- [x] Week 3: `attenuate` (real conservation checks + mint) and real `leash-hook` spend
+      enforcement (cap/expiry/allowlist/revoked + one ancestor level), committed via a
+      new `record_spend` CPI back into leash-program (leash-hook owns no Capability
+      accounts, can't write `spent` itself). Required changing `Capability.parent` from
+      `Option<Pubkey>` to a sentinel `Pubkey` and unifying attenuate's child seed scheme
+      with issue's root scheme — see docs/BUILD_PLAN.md §5 "Week 3 results" for why both
+      were load-bearing, not style choices. Week 1's spike test retired (superseded; its
+      findings live in BUILD_PLAN.md, not duplicated here) (2026-07-28T19:20:00+05:45)
+- [x] Week 4: ancestor-chain revocation extended to full MAX_DEPTH (3 levels), each
+      isolated in its own fresh chain (immediate parent / grandparent / root revoked,
+      plus the positive case); `attenuate`'s cap-exceeded and depth-exceeded rejections;
+      the expiry boundary. Closes every item in tests/invariants/README.md's checklist.
+      Required redesigning ancestor resolution: chaining each ancestor off the
+      *previous* ancestor's data broke on root capabilities (empty placeholder account,
+      no data to chain further) — fixed by storing the full `ancestors: [Pubkey; 3]`
+      array directly on each Capability instead. Refactored shared test helpers into
+      `tests/common/mod.rs`. See docs/BUILD_PLAN.md §5 "Week 4 results"
+      (2026-07-28T20:15:00+05:45)
+- [x] Week 5: TS SDK (`@leash/sdk`) + CLI (`@leash/cli`) wrapping every instruction plus
+      `createDeployment`/`watch`/`fetchCapability`. Proven against a real
+      `solana-test-validator`, not just type-checked: `leash init` -> `leash mint` (real
+      capability issued on-chain) -> `leash spend` (real hook-enforced Token-2022
+      transfer) -> fetch/decode confirms `spent` incremented -> `leash revoke` -> `leash
+      spend` again genuinely fails on-chain (`Error Code: Revoked`, thrown inside
+      leash-hook during Token-2022's own TransferChecked). Four real bugs found: Anchor's
+      JS coder lowercases account names ("Capability" -> "capability") for its coder's
+      internal map; raw `Transaction` objects need explicit feePayer/recentBlockhash
+      before signing; `anchor build`'s IDL-generation lint is stricter than plain
+      `cargo-build-sbf` (missing `/// CHECK:` comments); a stale ledger from an earlier
+      failed attempt produced a misleading "Access violation" crash, resolved by
+      resetting to a fresh ledger. See docs/BUILD_PLAN.md "Week 5 results"
+      (2026-07-28T21:40:00+05:45)
+- [x] Week 6: both programs deployed to devnet (leash_program:
+      `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk`, leash_hook:
+      `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`), then the full §11 demo script run
+      for real against them via the CLI (not localnet, not a video re-enactment): a
+      $5-capped capability hard-stopped at the cap, and a separate capability revoked
+      then rejected on its very next spend attempt — both real, checkable devnet
+      transactions. Added `LICENSE` (MIT). See docs/BUILD_PLAN.md "Week 6 results" for
+      every signature. Grant application drafting/submission is the one remaining
+      manual step (2026-07-28T22:30:00+05:45)
 
 ## Review
 
-Not yet run — see `review-and-iterate` once Week 4's invariant suite exists.
+Not yet run — see `review-and-iterate` now that the invariant suite is complete.
