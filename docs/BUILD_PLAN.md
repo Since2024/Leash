@@ -161,6 +161,63 @@ the peg.
 If any of D1-D4 turns out false, stop and redesign before writing the fuzz
 suite — don't build on top of an unvalidated assumption.
 
+### Week 1 spike results (2026-07-28) — D1-D4 all hold
+
+Validated with a real LiteSVM test
+(`programs/leash-hook/tests/spike_d1_d4.rs`): a fresh Token-2022 mint with the
+`TransferHook` extension, a real `initialize_extra_account_meta_list` call,
+and a real `transfer_checked` that triggers the hook and is confirmed via its
+own on-chain logs (`leash-hook: spike_execute invoked...`), followed by a
+second `mint_to` standing in for `attenuate`. All four hold as originally
+assumed. What the spike also surfaced, none of which was obvious in advance:
+
+- **Anchor's `#[program]` macro does not dispatch `Execute` directly.**
+  Token-2022 CPIs into the hook using the Transfer Hook Interface's own fixed
+  8-byte discriminator (`SplDiscriminate`), not Anchor's sighash. The bridge
+  is Anchor's `fallback(program_id, accounts, data)` entrypoint, which
+  manually unpacks `TransferHookInstruction` and dispatches to a plain shared
+  function — not through Anchor's generated `__private::__global` dispatcher,
+  which ties instruction-data lifetimes to the accounts slice in a way a
+  freshly-encoded local byte array can't satisfy on the current anchor-lang
+  (confirmed by hitting real E0621/E0597 errors, not by inspection).
+- **A freshly-derived PDA with `allocate`+`assign` and no lamports transfer
+  silently disappears.** `system_instruction::allocate` sets data size but
+  moves no lamports; any account at 0 lamports at the end of a transaction is
+  reclaimed by the runtime regardless of its data. `initialize_extra_account_
+  meta_list` must fund the PDA to rent-exemption before allocate/assign — the
+  reference implementation this was adapted from has this same gap. Found by
+  the PDA reading back as `None` after a "successful" init transaction, not
+  by inspection.
+- **Real USDC cannot take a `TransferHook` extension (D1, confirmed
+  directly)**: it's a plain SPL Token mint. The wrapped-asset design in §3 is
+  required, not a simplification.
+- **The hook only ever reads accounts (D2, confirmed directly)**: nothing in
+  `spike_execute_logic` moves tokens; Token-2022 owns the actual transfer.
+  `redeem` staying a separate explicit instruction (§4) is the right call.
+- **Dependency version pinning is load-bearing, not cosmetic.** Adding
+  `litesvm`, `spl-token-2022`, or `spl-associated-token-account-client` at
+  their latest versions (rather than pinned to what `anchor-lang`/`anchor-spl`
+  1.1.2 already resolve) pulled in a second, incompatible generation of
+  `solana-instruction`/`solana-pubkey`/`wincode` and cost real time to trace.
+  Fix: pin dev-dependencies to match versions already in the main dependency
+  tree; reuse `anchor_spl::token_2022::spl_token_2022` and
+  `anchor_spl::associated_token::spl_associated_token_account` re-exports
+  instead of adding parallel SPL crates directly.
+- **The installed Solana CLI toolchain was too old for the current crate
+  ecosystem.** 1.18.26's bundled platform-tools shipped `rustc 1.75.0`, which
+  can't parse a `edition2024`-requiring dependency or a Cargo.lock v4. Fixed
+  by upgrading via the official installer
+  (`https://release.anza.xyz/stable/install`) to Agave 4.1.1 / platform-tools
+  v1.54 — after which both lockfile formats and edition2024 dependencies work
+  fine. Anyone else building this from a stale Solana CLI install will hit
+  the same wall.
+
+D4's dynamic-per-source-account derivation (a real ancestor Capability PDA
+instead of the spike's fixed placeholder account) is still open — this
+spike only proved the *mechanism* (extra accounts resolve and arrive
+correctly), not the *specific* seed scheme Week 3 needs. That's the next
+open question, not a settled one.
+
 ## 6. Repo structure
 
 ```
