@@ -1,21 +1,50 @@
 use anchor_lang::prelude::*;
 
-use crate::constants::MAX_ALLOWLIST_LEN;
+use crate::constants::{ANCESTOR_SLOTS, MAX_ALLOWLIST_LEN};
 
-/// One node in a capability tree. A root capability has `parent = None`; an attenuated
-/// child has `parent = Some(<parent Capability pubkey>)`.
+/// Byte offset (within an account's raw data, discriminator included) where `parent`
+/// begins. Fixed and load-bearing: leash-hook's extra-account-meta config reads this
+/// field directly out of raw account bytes (via `PubkeyData::AccountData`) to locate a
+/// capability's parent without deserializing the whole struct. See the doc comment on
+/// `parent` below for why it can't be an `Option<Pubkey>`.
+pub const PARENT_FIELD_OFFSET: u8 = 8 + 32; // discriminator (8) + owner (32)
+
+/// Byte offset where the `ancestors` array begins. Also fixed and load-bearing — see
+/// the doc comment on `ancestors` below for why leash-hook reads these directly out of
+/// the *source* capability's own data instead of chaining through each ancestor's
+/// `parent` field one hop at a time.
+pub const ANCESTORS_FIELD_OFFSET: u8 = PARENT_FIELD_OFFSET + 32;
+
+/// One node in a capability tree. A root capability has `parent = Pubkey::default()`; an
+/// attenuated child has `parent = <parent Capability pubkey>`.
 ///
 /// Invariant (checked by the program, not by convention — see BUILD_PLAN.md §2/§3):
 ///     spent + committed_to_children <= cap
-///
-/// TODO(week 2): finalize space calculation once allowlist storage strategy (flat Vec vs.
-/// merkle root) is settled by the D1-D4 spike; MAX_ALLOWLIST_LEN keeps this MVP-sized.
 #[account]
 pub struct Capability {
     /// Signer who may attenuate or revoke this specific node.
     pub owner: Pubkey,
-    /// None for root capabilities.
-    pub parent: Option<Pubkey>,
+    /// `Pubkey::default()` (all-zero) for root capabilities, never a real Capability
+    /// address otherwise. Deliberately NOT `Option<Pubkey>`: Borsh encodes `Option<T>`
+    /// as a 1-byte tag plus 32 bytes only when `Some`, so its on-disk size — and every
+    /// field after it — would shift depending on whether a capability has a parent.
+    /// leash-hook's extra-account-meta resolution needs `parent` at a **fixed** byte
+    /// offset to read it directly out of raw account data (see `PARENT_FIELD_OFFSET`),
+    /// so it has to be a fixed-size `Pubkey`, not an `Option`. Found by working through
+    /// the hook's account-resolution design, not by guessing — see BUILD_PLAN.md §5.
+    pub parent: Pubkey,
+    /// `[immediate parent, grandparent, great-grandparent]` (up to `ANCESTOR_SLOTS` =
+    /// `MAX_DEPTH`), each `Pubkey::default()` past this capability's actual depth.
+    /// Deliberately a **direct copy on this account**, not something leash-hook chains
+    /// together by reading each ancestor's own `parent` field one hop at a time — that
+    /// approach was tried first (Week 4) and broke: a root capability's `parent` is the
+    /// System Program placeholder address, which has zero account data, so trying to
+    /// read a "further parent" *out of* that placeholder's data fails at the
+    /// client-side resolution step before a transaction is even submitted. Storing the
+    /// whole chain here means every ancestor is read from *this* capability's own data
+    /// (always real, always populated), never from a potentially-empty placeholder.
+    /// Populated by `attenuate`: `[parent, parent.ancestors[0], parent.ancestors[1]]`.
+    pub ancestors: [Pubkey; ANCESTOR_SLOTS],
     /// The Token-2022 token account holding this capability's spendable balance.
     pub token_account: Pubkey,
     /// Total this capability may ever spend (cumulative, not a rolling window).
@@ -37,10 +66,10 @@ pub struct Capability {
 }
 
 impl Capability {
-    // Anchor account discriminator (8) + fields. Recomputed once allowlist storage is final.
     pub const MAX_SIZE: usize = 8 // discriminator
         + 32 // owner
-        + 1 + 32 // parent (Option<Pubkey>)
+        + 32 // parent (fixed-size Pubkey, see doc comment — not Option<Pubkey>)
+        + (32 * ANCESTOR_SLOTS) // ancestors
         + 32 // token_account
         + 8  // cap
         + 8  // spent
@@ -50,4 +79,8 @@ impl Capability {
         + 1  // revoked
         + 1  // depth
         + 1; // bump
+
+    pub fn is_root(&self) -> bool {
+        self.parent == Pubkey::default()
+    }
 }
