@@ -18,6 +18,26 @@ pub const AUTHORITY_SEED: &str = "authority";
 /// until D4 (extra-account-metas limits) is validated in the Week 1 spike.
 pub const MAX_DEPTH: u8 = 3;
 
+/// Same value as `MAX_DEPTH`, as a `usize` for array sizing (`Capability.ancestors`).
+/// Kept as a separate constant rather than casting `MAX_DEPTH` inline everywhere it's
+/// needed for an array size.
+pub const ANCESTOR_SLOTS: usize = MAX_DEPTH as usize;
+
 /// Flat allowlist size for the MVP. Deferred: merkle-proof allowlists (BUILD_PLAN.md §12)
 /// once a flat Vec<Pubkey> stops being cheap to store/check.
 pub const MAX_ALLOWLIST_LEN: usize = 10;
+
+/// leash-hook's program ID, as a string (not a `const Pubkey` — parsing a base58 string
+/// isn't `const fn` in the solana-pubkey version this workspace pins, and chasing the
+/// right `pubkey!` macro import path wasn't worth it for one constant). leash-hook owns
+/// no Capability accounts (leash-program does), so it can't write `spent` directly —
+/// Solana only lets the owning program mutate an account. `record_spend` is the CPI
+/// entrypoint leash-hook calls instead, and this constant is how `record_spend` verifies
+/// the caller really is leash-hook: it checks the provided authority PDA is
+/// `find_program_address(["hook-authority"], HOOK_PROGRAM_ID)`, which only leash-hook
+/// can sign for. Keep in sync with leash-hook's declare_id!.
+pub const HOOK_PROGRAM_ID_STR: &str = "9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS";
+
+/// Seed for leash-hook's own signing PDA (derived under HOOK_PROGRAM_ID, not this
+/// program), used as the CPI caller's proof-of-identity in `record_spend`.
+pub const HOOK_AUTHORITY_SEED: &str = "hook-authority";
