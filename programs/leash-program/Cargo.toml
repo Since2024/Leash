@@ -32,6 +32,9 @@ solana-message = "3.0.1"
 solana-transaction = "3.0.2"
 solana-signer = "3.0.0"
 solana-keypair = "3.0.1"
+leash-hook = { path = "../leash-hook", default-features = false, features = ["cpi"] }
+spl-transfer-hook-interface = "2.1.0"
+futures = "0.3.33"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
