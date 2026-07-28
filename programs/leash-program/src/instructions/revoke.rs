@@ -17,7 +17,7 @@ pub struct Revoke<'info> {
     pub capability: Account<'info, Capability>,
 }
 
-pub fn revoke_handler(_ctx: Context<Revoke>) -> Result<()> {
-    // TODO(week 4): ctx.accounts.capability.revoked = true;
-    todo!("revoke: see docs/BUILD_PLAN.md §4 before implementing")
+pub fn revoke_handler(ctx: Context<Revoke>) -> Result<()> {
+    ctx.accounts.capability.revoked = true;
+    Ok(())
 }
