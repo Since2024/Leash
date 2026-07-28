@@ -1,0 +1,182 @@
+1. One-sentence pitch
+
+LEASH — spending authority for AI agents as a bearer object whose limits are enforced by the money itself, not by the software you're trying to constrain.
+
+Give your agent $20, a 4-hour expiry, and a merchant allowlist. It physically cannot exceed them. Revoke instantly from anywhere.
+
+2. The hidden truth
+
+The agent payments war is over and you lost it before you started. The x402 Foundation now has 40 members with Visa, Mastercard, American Express, and Stripe as premier members. Google shipped AP2, AWS previewed Bedrock AgentCore Payments, Adyen shipped Agentic. As one 2026 survey put it bluntly: the payment layer is close to plug and play.
+
+Here is what nobody built.
+
+Every one of those systems gives the agent a wallet and enforces "spending limits" in the runtime that hosts the agent. AWS enforces limits in AgentCore. Privy and Turnkey enforce them in their policy engines. Your framework enforces them in your Python process.
+
+That means: the thing enforcing the limit is the thing you're afraid of. A compromised agent, a prompt-injected agent, an agent whose runtime has a bug, or an agent that simply got copied to another machine, is an agent with no limit at all. Security people already know this. Native OAuth setups leave long-lived tokens sitting with the agent; if the agent experiences memory compromise or prompt injection, standing tokens get stolen and exploited. And the leakage is not theoretical — Lakera scanned roughly 46,500 npm packages and found credentials sitting in Claude's config directory in 30 of them, because developers ran Claude Code and pushed the .claude directory without realizing.
+
+The industry's answer is a gateway: put a proxy in front of everything and enforce policy there. That works for one enterprise's internal agents. It fails completely for the actual shape of the agent world — your agent runs on your laptop, then in a sandbox, then inside someone else's cloud, then spawns three subagents, then calls a service that has never heard of your company and has zero reason to call your policy server.
+
+The structural truth: in a world where the executing process is untrusted and mobile, permission must be a property of the asset, not a property of the server. A budget must be a bearer object that carries its own rules and cannot be talked out of them.
+
+Nobody built this because every well-funded player in the space is an identity company (Okta, Auth0, WorkOS, Arcade) or a custody company (Privy, Turnkey, Coinbase). Both business models require the policy to live on their server — that's what you're paying them for. An asset that enforces its own rules with no server in the path is directly contrary to their revenue model. That's the incentive lock that keeps this open.
+
+3. The user story
+
+You, tonight. You want to leave an agent running for six hours doing competitor research. It needs to hit three paid APIs and buy some data. Today your options are: give it a key with your full balance and pray, or don't run it. You don't run it. That's the whole market — the agent economy is throttled not by capability but by the fact that nobody will hand an LLM an unbounded credential.
+
+With LEASH: leash mint --budget 20 --expires 6h --allow api.exa.ai,api.firecrawl.dev. You get a capability the agent holds. At $20.01 the transfer fails at the token program level. Not "the SDK returns an error" — the state transition is invalid. You go to sleep.
+
+Priya, running a multi-agent pipeline. Her orchestrator spawns 40 subagents. Today, per the exact problem the O'Reilly analysis names: when Agent A delegates to Agent B and B spawns C, each hop either reuses the original token (overprivileged) or has no token at all (untracked). With LEASH, the orchestrator holds $500 and mints 40 attenuated child capabilities of $12 each. A child can only ever mint something weaker than itself. The parent's cap binds the entire tree, transitively, without any of the 40 subagents being able to see or reach the parent's budget.
+
+Marco, who sells an MCP server. He wants to charge per call. He doesn't want to run a billing system, and he lives in Argentina so Stripe is painful. He accepts LEASH capabilities: verify on-chain, debit, done. He never holds a customer relationship, never sees a card, gets settled in stablecoin.
+
+4. Why current software fails
+
+Server-side policy engines (AWS AgentCore, Privy, Turnkey, Arcade, Composio): the enforcement point must be reachable and trusted by every party. Fine inside one company. Structurally impossible across the open agent web — a random API in Berlin will not call your policy server to ask whether your agent is allowed to spend, and even if it would, that's a synchronous network hop on every transaction at agent frequency, plus a single point of failure and a perfect exfiltration target.
+
+Capability tokens (macaroons, biscuits, UCAN, JWT attenuation): genuinely elegant, and they solve attenuation — the transitive delegation problem — with pure cryptography, no ledger. I want to be honest that this covers more ground than crypto people admit. But they have two holes that are unfixable in the model, known since the 1970s capability literature:
+
+Revocation. A bearer token is valid until it expires. You cannot recall it. The workaround is a revocation list, which requires a trusted publisher — reintroducing the server.
+
+Shared stateful limits. This is the killer. "This chain may spend $50 total" is unenforceable when N independent verifiers each check the token locally. Verifier A doesn't know what Verifier B allowed. The agent spends $50 at each of thirty services. Every capability system in history punts on this by making limits per-verifier, which is not a budget.
+
+Separate wallets per agent: doesn't compose (the total isn't bounded), doesn't attenuate, and creates N key-management problems instead of one.
+
+Rate limits and dashboard spend caps: per-provider, after-the-fact, and enforced by the seller.
+
+5. Why Solana is essential
+
+The load-bearing requirement is exactly the hole in capability systems: a single authoritative counter that many mutually-distrusting verifiers can atomically debit, at sub-second latency, that no verifier owns. That is not a database, because whoever hosts the database is a trusted party in every transaction and can lie, censor, or go down.
+
+Specifically:
+
+Transfer Hooks (Token-2022). The constraint travels with the asset. Merchant allowlist, expiry, per-transaction cap, velocity limit, and revocation check all execute inside the transfer, so any wallet, any service, any agent framework that touches the capability inherits enforcement without integrating anything. This is the entire thesis in one primitive: the rules cannot be bypassed by the holder, because the holder never enforces them. There is no equivalent to this in any other production token standard.
+
+PDAs + attenuation. A capability is a program-derived account whose authority is provably a subset of its parent's. The "child can only be weaker than parent" invariant is enforced by the program, so delegation depth is unbounded and safe. This is what makes the multi-agent tree case work.
+
+ZK Compression. Every agent run mints capabilities; a serious user creates thousands per day, most living minutes. At standard rent this is economically dead. Compressed accounts make ephemeral, per-task, per-subagent capabilities effectively free, which is what lets you mint one per task rather than one per agent — dramatically tighter blast radius.
+
+Local fee markets + Sealevel. One agent going haywire, or one popular service getting hammered, must not raise the cost of or block revocation for everyone else. Revocation latency under load is a security property here, not a performance one: if you can't revoke during congestion, you can't revoke when it matters. A global fee market makes the security guarantee degrade exactly when it's needed. This is the strongest argument against building on an L2.
+
+Confidential Transfers. A company's agent spend pattern is its operational roadmap. This isn't needed for the indie wedge but it's what makes the product legal to adopt at a company later.
+
+The genuinely hard part, which is why this is interesting and not a wrapper: a shared budget account is a hot write-lock, and Solana's parallelism dies on hot accounts. Naively, a $500 budget debited by 40 subagents serializes into one lane. The real design is a sharded budget with a mint-side voucher pattern: the parent capability issues short-lived, single-use, hook-constrained sub-vouchers across N shard accounts, with a conservation invariant checked at merge. Getting that right — bounded total spend, no double-spend across shards, no serialization bottleneck, sub-second revocation — is a real protocol design problem. That difficulty is your moat, and it is exactly the kind of problem you said you want.
+
+6. Technical architecture
+
+leash-program/          Rust, Anchor. Token-2022 mint w/ transfer hook.
+                        Capability = compressed PDA: {parent, cap, spent,
+                        expiry, allowlist_root, revoked}. Attenuation +
+                        conservation invariants. Sharded budget accounts.
+leash-hook/             Transfer hook program: allowlist merkle proof,
+                        expiry, velocity, revocation flag, debit-and-commit.
+@leash/sdk              TypeScript. mint(), attenuate(), spend(), revoke().
+                        Local signing, no server in the hot path.
+leash-py                Python SDK — where the agent devs actually are.
+leash                   CLI. `leash mint`, `leash watch`, `leash kill`.
+leash-mcp               MCP server so agents can request and manage their
+                        own sub-budgets natively.
+adapters/               Drop-in wrappers: OpenAI, Anthropic, x402 client,
+                        LangGraph, CrewAI, Claude Agent SDK.
+
+Two design commitments that matter more than the code:
+
+No server in the transaction path. The moment you run a service that must be up for a payment to clear, you've rebuilt Privy and lost the argument. Everything hot is client-side signing plus chain state.
+
+x402 is a friend, not an enemy. Ship a LEASH-aware x402 client on day one. x402 answers "how does the agent pay." LEASH answers "how does the owner say no." Positioning as complementary to a Linux Foundation standard backed by Visa and Stripe is free distribution; positioning as competitive is suicide.
+
+7. MVP (3–6 months)
+
+Months 1–2: the on-chain program. Mint, attenuate, spend, revoke. One shard, no confidential transfers, no compression yet. Devnet. Get the invariants right and write a fuzz harness before anything else — a bug here is a total-loss bug.
+
+Month 3: TS + Python SDKs and the CLI. One thing must work perfectly: leash mint --budget X --expires Y --allow Z → agent runs → hard stop at the limit. Ten-minute time-to-first-value or nothing.
+
+Month 4: ZK compression, sharded budgets, three framework adapters, the MCP server. Mainnet with a conservative cap (e.g. capabilities max $500) so a bug isn't fatal.
+
+Month 5–6: the acceptance side. Ship leash-verify, a 20-line middleware for Express/FastAPI/Hono that lets any API accept LEASH capabilities. Get 25 small API and MCP-server operators to accept it.
+
+What you deliberately do not build: a dashboard, a hosted service, a wallet, a token, an enterprise console, a marketplace. Every one of those is a trap that converts you from a primitive into a SaaS company.
+
+8. Go-to-market
+
+Pure bottom-up, which is the only option available to you and also the correct one.
+
+The wedge is fear, and fear spreads faster than convenience. The demo is 40 seconds: an agent with a normal API key burning $200 in a loop, then the same agent with a LEASH capability stopping dead at $5. Post it. That video is the entire early GTM.
+
+Sequence:
+
+Ship open source. MIT. Working code before any writing.
+
+One technical post: "Your agent's spending limit is enforced by your agent." Make the argument, not the product pitch. HN and r/LocalLLaMA reward the argument and punish the pitch.
+
+Framework adapters as PRs into LangGraph, CrewAI, and agent SDK ecosystems — this is how you get distribution without relationships.
+
+MCP server directories. Every agent that can mint its own sub-budgets is an agent whose author now depends on you.
+
+The multi-agent case is the viral loop. Anyone running a swarm has the transitive delegation problem acutely and there is no other answer to it. That's a small, loud, technical audience — exactly your reachable market.
+
+Acceptance side last: indie API and MCP-server authors, many of them outside the US, for whom "get paid globally without Stripe" is independently worth it.
+
+You never talk to a procurement department. If a company adopts it, it's because three of their engineers already did.
+
+9. Business model
+
+Year 1: none. Charging before the primitive is adopted kills the primitive. This is the Stripe/Cloudflare/Sentry pattern — the free tier isn't marketing, it's the product.
+
+Then, in order:
+
+Hosted revocation and monitoring (~$20–200/mo): the chain enforces limits for free; you sell the pager that fires when an agent hits 80%, the audit export, the kill switch on your phone. People will pay for the anxiety relief, not the enforcement.
+
+Acceptance fee (10–30bps) on capabilities redeemed by services using your verification path. The service is getting global machine-native payment acceptance; that's worth basis points.
+
+Team plane ($500–5k/mo): confidential transfers, org policy, spend attribution, SSO. This is where real revenue is, and it arrives via bottom-up adoption rather than sales.
+
+Later: float and issuance. If vendors start issuing prepaid credits as LEASH capabilities — a transferable, non-expiring credit that raises their prepay conversion — you become the rail underneath API credit balances. That's the big business, but you don't get there without the first three.
+
+Honest expectation: this is a $0 revenue company for 12–18 months. Budget accordingly.
+
+10. Long-term platform vision
+
+Spending authority is the narrow wedge into a general one: bounded, delegatable, revocable authority as a bearer object.
+
+Money first because it's the easiest to specify and the scariest to get wrong. But the same primitive expresses "may read these 40 documents, 200 times, until Friday," "may send at most 50 emails," "may deploy to staging but not prod, twice." The capability-security literature has argued for fifty years that this is the correct model and it never shipped, because attenuated bearer tokens couldn't be revoked or bounded in aggregate. Those two holes now have an answer.
+
+If agents become the dominant way software acts on the world — which is the bet — then every action needs a bounded authority object, and there will be one or two neutral registries for them. That's a Cloudflare-shaped company: boring, load-bearing, everywhere.
+
+11. Competitive moat
+
+The protocol design itself. Sharded budgets with conservation invariants, safe attenuation, and sub-second revocation under load is genuinely hard. First correct implementation with a clean audit is a 12–18 month lead over anyone starting fresh.
+
+Adapter surface area. Fifty framework integrations is unglamorous work nobody funded wants to do and a very slow thing to replicate.
+
+Two-sided network. Every accepting service makes capabilities more useful; every agent using them pressures more services to accept.
+
+Neutrality. Your competitors (Okta, Privy, Turnkey, AWS) all need to be in the path. You're the only credible party who isn't, and that's the entire pitch. They can't copy it without cannibalizing themselves — this is the Innovator's Dilemma in its textbook form.
+
+Being the person who wrote the spec. In ten years, either agent capabilities are standardized and you wrote it, or they aren't and you have a nice open source project.
+
+12. Biggest execution risks
+
+The agent economy stays fake. This is the top risk by a wide margin. In 2026 agentic payments sit between infrastructure reality — 165 million+ x402 transactions across 69,000 active agents by April — and market skepticism, with roughly half that volume appearing to be testing rather than genuine commerce. Daily transactions fell 92% from 731,000 in December 2025 to 57,000 in February 2026. You may be building the seatbelt for a car nobody drives yet.
+
+Turnkey or Privy ships "policy in the token" as a feature. They have the customers. Their server-side model makes it awkward, not impossible. You have maybe 18 months.
+
+A bug drains a real budget. Total credibility loss, unrecoverable. Formal-ish verification and conservative caps aren't optional.
+
+Agent devs don't care yet. Most people running agents are spending $30/month and don't feel the pain. The market only becomes real when agents spend real money — and if that takes three years, you starve.
+
+Nobody accepts it. The one-sided version (limits on your own spend) is useful; the two-sided version (services natively accepting capabilities) is where the value is, and cold-starting acceptance is genuinely hard.
+
+Stablecoin denomination is a regulatory surface you can't fully control from anywhere in the world.
+
+13. Brutal self-critique
+
+It might be a feature. The strongest version of the bear case: "spending limit enforced in the token instead of the server" is one engineer-quarter of work at Turnkey, and the market may not care about the distinction because most agents run in one company's runtime anyway. If enterprise-hosted agents dominate, gateways win and LEASH is a purist's answer to a problem the market solved adequately. I think this is maybe 40% likely and you should take it seriously.
+
+I am recommending a market that is currently in a hype trough. Transaction volume collapsed 92% from peak. The honest read is that agent commerce is 18–36 months from being real. That's actually acceptable — you want to be early to infrastructure, and the two years of nobody caring is what buys you the lead — but it means no revenue and no validation for a long time, and you said "limited capital." This is the single largest tension between this idea and your constraints and I can't resolve it.
+
+The Solana argument is strong on transfer hooks and honest-but-weaker elsewhere. Transfer hooks and local fee markets are load-bearing. ZK compression is an economic optimization, not a requirement. A well-designed L2 with account abstraction could approximate 70% of this. I'd rather tell you that now than have an investor tell you.
+
+You will be tempted to build a dashboard. Within four months someone will offer money for a hosted console and you'll build it, and then you'll be a SaaS company with a blockchain inside, which is the worst possible outcome. Write this on a wall.
+
+It didn't clear the bar you set. You asked me to reject anything that isn't category-defining. On strict odds this is maybe 15% to be a real company and 3% to be category-defining. I'm giving it to you anyway because every candidate that scored higher on market certainty failed your founder constraints outright, and a 60%-likely company you cannot build is worth strictly less than a 15%-likely company you can. That trade is the actual answer to your question.

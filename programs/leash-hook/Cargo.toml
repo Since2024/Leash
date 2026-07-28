@@ -1,0 +1,30 @@
+[package]
+name = "leash-hook"
+version = "0.1.0"
+description = "Leash: Token-2022 TransferHook enforcement (cap/expiry/allowlist/revoked). See docs/BUILD_PLAN.md."
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "leash_hook"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "1.0.0"
+anchor-spl = { version = "1.0.0", features = ["token_2022"] }
+# TODO(week 1, D4): confirm whether anchor-spl's transfer-hook support is sufficient or
+# whether the raw `spl-transfer-hook-interface` crate is needed directly for
+# ExtraAccountMetaList handling (ancestor-chain accounts). Resolve before Week 3.
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

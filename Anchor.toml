@@ -1,0 +1,23 @@
+[toolchain]
+package_manager = "yarn"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+leash_program = "Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk"
+leash_hook = "9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS"
+
+[programs.devnet]
+leash_program = "Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk"
+leash_hook = "9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]
