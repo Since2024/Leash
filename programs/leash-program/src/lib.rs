@@ -12,10 +12,11 @@ pub use state::*;
 
 declare_id!("Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk");
 
-/// Capability program: issue / attenuate / revoke / redeem. Spending is enforced
-/// separately, inside the Token-2022 transfer itself — see the `leash-hook` program
-/// and docs/BUILD_PLAN.md §4. This program never checks a spend; it only ever
-/// mints, revokes, and redeems.
+/// Capability program: issue / attenuate / revoke / redeem, plus `record_spend` — the
+/// CPI entrypoint leash-hook calls to commit a spend it has already validated. The
+/// actual cap/expiry/allowlist/revoked checks happen in leash-hook, inside the
+/// Token-2022 transfer itself (docs/BUILD_PLAN.md §4); this program owns the Capability
+/// accounts and is the only one allowed to write `spent`.
 #[program]
 pub mod leash_program {
     use super::*;
@@ -44,5 +45,9 @@ pub mod leash_program {
 
     pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
         instructions::redeem::redeem_handler(ctx, amount)
+    }
+
+    pub fn record_spend(ctx: Context<RecordSpend>, amount: u64) -> Result<()> {
+        instructions::record_spend::record_spend_handler(ctx, amount)
     }
 }
