@@ -52,7 +52,15 @@ pub fn record_spend_handler(ctx: Context<RecordSpend>, amount: u64) -> Result<()
         .spent
         .checked_add(amount)
         .ok_or(LeashError::CapExceeded)?;
-    require!(new_spent <= capability.cap, LeashError::CapExceeded);
+    // Budget already reserved for children counts against the cap too — see the long
+    // comment on the matching check in leash-hook's `spend_logic`, and docs/ROADMAP.md
+    // 0.2. Repeated here rather than deferred to the hook for the reason the doc comment
+    // above already gives: this program is the one that actually writes `spent`, so it
+    // has to hold on its own terms even if the hook's arithmetic is wrong.
+    let obligations = new_spent
+        .checked_add(capability.committed_to_children)
+        .ok_or(LeashError::CapExceeded)?;
+    require!(obligations <= capability.cap, LeashError::CapExceeded);
     capability.spent = new_spent;
 
     Ok(())

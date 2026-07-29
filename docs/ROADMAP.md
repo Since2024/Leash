@@ -33,8 +33,9 @@ Phase 1 MVP complete: both programs deployed to devnet, full hook enforcement
 end-to-end against a real validator. Nothing on mainnet, and per BUILD_PLAN.md §10 that
 stays true until at minimum Phase 0 and Phase 1 below are closed.
 
-Two of the Phase 0 items below are **critical**: 0.1 and 0.2. Either one, on its own, is
-sufficient to lose depositor funds. Both are reachable without any unusual behaviour.
+Two of the Phase 0 items below were **critical** — either one, on its own, sufficient to
+lose depositor funds, and both reachable without any unusual behaviour. 0.2 is now fixed
+and covered by tests that fail without the fix. **0.1 remains open.**
 
 ---
 
@@ -85,10 +86,11 @@ Whichever is chosen, it needs a test per property, in the style of the existing 
 and per 0.5, that test must assert the specific error code, not merely that the call
 failed.
 
-### 0.2 `committed_to_children` is never enforced on the spend path — **critical**
+### 0.2 `committed_to_children` was never enforced on the spend path — **critical**
 
-- [ ] **A parent can spend budget it already delegated, so total spend exceeds the
-      deposit backing it.** Found by reading the code; not inherited from the build plan.
+- [x] **Fixed.** A parent could spend budget it had already delegated, so total spend
+      exceeded the deposit backing it. Found by reading the code; not inherited from the
+      build plan.
 
 `attenuate` reserves budget correctly. It computes
 `parent_remaining = cap - spent - committed_to_children` and rejects a child whose cap
@@ -135,15 +137,27 @@ What makes it worth flagging loudly rather than filing quietly: the invariant is
 `BUILD_PLAN.md:82` repeats it: "Invariant checked on every mutation:
 `spent + committed_to_children <= cap`." It is not checked on any mutation.
 
-**Fix:** both enforcement points must check
-`spent + committed_to_children + amount <= cap`. Fixing only the hook is insufficient —
-`record_spend` is what actually writes `spent`, and it must hold independently of whether
-the hook did its job. Needs a test that fails without the fix and asserts the error code
-(`LeashError::CapExceeded` / `LeashHookError::CapExceeded`), not just failure.
+**The fix, as landed:** both enforcement points now check
+`spent + committed_to_children + amount <= cap` — `leash-hook`'s `spend_logic` and
+`record_spend`. Fixing only the hook would have been insufficient: `record_spend` is what
+actually writes `spent`, so it has to hold independently of whether the hook's arithmetic
+is right. (That second check is unreachable from outside — nothing but the hook can
+produce the required `hook-authority` signature — so it is defense in depth that no test
+can exercise directly, which is exactly why it is written to stand alone.)
 
-**Interaction with 0.1:** while `redeem` remains unauthenticated, the over-issued units
-are directly cashable, so the two compound. Fixing 0.1 alone does not fix 0.2 — the
-over-spend still reaches merchants through the normal transfer path.
+Covered by `programs/leash-program/tests/conservation_invariant.rs`: the full
+delegate-then-overspend sequence, the exact 600/601 boundary, and accumulation across
+multiple children. All three assert `LeashHookError::CapExceeded` (6004) specifically via
+the new `expect_err_code`, not `is_err()` — which matters here, because the pre-fix
+behaviour and a Token-2022 insufficient-funds rejection are indistinguishable to a bare
+failure check. **Verified to fail without the fix**: with the two checks reverted and the
+programs rebuilt, all three fail with "expected … to fail with Custom(6004), but it
+succeeded."
+
+**Interaction with 0.1:** 0.1 is unaffected and still open. Fixing 0.2 bounds what a
+capability tree can *spend*; it does nothing about `redeem`, which never consults a
+Capability at all. An agent can still cash out its unspent balance to an arbitrary
+address.
 
 ### 0.3 One owner can only ever hold one capability
 
@@ -219,11 +233,12 @@ not that it is *this* transfer's.
       So the existing over-cap test proves "spending more than was issued fails," not
       specifically "leash-hook's `amount + spent > cap` check works."
 
-- [ ] **The test suite could not distinguish them even if the balances differed.**
-      `expect_err` (`tests/common/mod.rs:58-61`) asserts `is_err()` and then *prints* the
-      error to stderr — it never inspects it. There are zero error-code assertions across
-      `week2_issue_redeem.rs`, `week3_spend_enforcement.rs`, and
-      `week4_ancestor_chain_and_fuzz.rs`.
+- [~] **The test suite could not distinguish them even if the balances differed.**
+      `expect_err` asserts `is_err()` and then *prints* the error to stderr — it never
+      inspects it. `expect_err_code` now exists alongside it (`tests/common/mod.rs`) and
+      is used throughout `conservation_invariant.rs`, but the three original test files
+      still use the weaker helper, so their rejections remain unverified as to cause.
+      Converting them is the remaining work here.
 
       This means **CLAUDE.md and BUILD_PLAN.md overstate the committed tests** where they
       claim every rejection is verified by its actual on-chain error code. That practice
@@ -231,16 +246,15 @@ not that it is *this* transfer's.
       false-positives were caught — but it was never encoded as an assertion. Both
       documents should be corrected.
 
-      Fix: add an `expect_err_code` helper asserting the specific `LeashError` /
-      `LeashHookError` variant (`error.rs` in each program; hook variants are `Revoked`
-      6000, `ParentRevoked` 6001, `Expired` 6002, `NotAllowlisted` 6003, `CapExceeded`
-      6004), then convert the existing assertions. It does not exist on `main` today.
-      This is the cheap 80% of isolating cap-vs-balance, and it is a prerequisite for
-      trusting any new Phase 0 test — including 0.2's.
+      `expect_err_code` asserts the specific `LeashError` / `LeashHookError` variant
+      (hook variants: `Revoked` 6000, `ParentRevoked` 6001, `Expired` 6002,
+      `NotAllowlisted` 6003, `CapExceeded` 6004). It was added as a prerequisite for
+      0.2's test, since without it that test would have passed for the wrong reason.
 
-      Fully isolating the two additionally needs a scenario where balance exceeds cap,
-      which no current instruction produces. Note that 0.2's over-issuance is *not* a
-      usable source of one: it is a bug to be fixed, not a fixture to build on.
+      Fully isolating cap-from-balance additionally needs a scenario where balance exceeds
+      cap, which no current instruction produces. Note that 0.2's over-issuance was *not*
+      a usable source of one — it was a bug to fix, not a fixture to build on, and it is
+      now fixed.
 
 ### 0.6 No way to enumerate an owner's capabilities
 
@@ -289,10 +303,10 @@ between a credible primitive and an unrecoverable incident.
       over a state machine) is a different thing and is a real gap.
 
       The invariant to drive it is `spent + committed_to_children <= cap`, for every node,
-      after every operation. **Note the ordering dependency: that invariant does not hold
-      on `main` today — see 0.2, which is precisely the case of it being violated.**
-      Fuzzing is what would have found 0.2; it is also what will keep it fixed. Land 0.2
-      first, then use this to prove no sibling case survives.
+      after every operation. That invariant now holds on `main` (0.2), and is enforced at
+      both write paths — but it is currently proven only by the hand-built cases in
+      `conservation_invariant.rs`. Fuzzing is what would have found 0.2 in the first
+      place; it is what would show whether a sibling case survives.
 - [ ] **A written argument for the conservation invariant.** `checked_*` arithmetic is
       used throughout, but the invariant currently holds — where it holds at all — by
       case-by-case inspection of `issue`/`attenuate`/`record_spend`. It deserves an
@@ -412,7 +426,8 @@ Concretely, so it's falsifiable rather than a vibe:
 
 Until then: devnet. BUILD_PLAN.md §10 names real-money temptation as a specific risk of
 this project, and 0.1 and 0.2 above are concrete demonstrations that the instinct was
-right.
+right — two fund-losing bugs in a codebase whose tests were all green, one of them still
+open.
 
 ## Verification approach
 

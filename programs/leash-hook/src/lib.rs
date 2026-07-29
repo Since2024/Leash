@@ -211,10 +211,21 @@ fn spend_logic(accounts: &[AccountInfo], amount: u64) -> Result<()> {
             .any(|d| d == destination.key),
         LeashHookError::NotAllowlisted
     );
-    let new_spent = amount
+    // A spend has to fit in the budget that is actually still free — the cap minus what
+    // has already been spent AND minus what `attenuate` has already reserved for
+    // children. Checking only `spent + amount <= cap` lets a parent spend budget it
+    // already delegated: since attenuation *mints* the child's units rather than moving
+    // the parent's, the parent's token account still holds the full original balance,
+    // so nothing else stops it. Parent and child could then each spend that same $20,
+    // putting more units into circulation than the vault backs.
+    //
+    // This is the invariant `state.rs` states on the Capability struct and BUILD_PLAN §2
+    // promises: `spent + committed_to_children <= cap`. See docs/ROADMAP.md 0.2.
+    let obligations = amount
         .checked_add(capability.spent)
+        .and_then(|v| v.checked_add(capability.committed_to_children))
         .ok_or(LeashHookError::CapExceeded)?;
-    require!(new_spent <= capability.cap, LeashHookError::CapExceeded);
+    require!(obligations <= capability.cap, LeashHookError::CapExceeded);
 
     // Walk every real ancestor, bounded by `capability.depth` (never MAX_DEPTH itself —
     // a depth-1 capability has exactly one real ancestor, at accounts[7]; anything

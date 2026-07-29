@@ -60,6 +60,42 @@ pub fn expect_err(res: Result<(), String>, label: &str) {
     eprintln!("  (expected failure for {}: {})", label, res.err().unwrap());
 }
 
+/// Anchor's `#[error_code]` numbers variants from 6000, so a `LeashError` /
+/// `LeashHookError` variant at index N surfaces on-chain as `Custom(6000 + N)`.
+pub const E_LEASH_CAP_EXCEEDED: u32 = 6000; // LeashError::CapExceeded (index 0)
+pub const E_HOOK_REVOKED: u32 = 6000; // LeashHookError::Revoked (index 0)
+pub const E_HOOK_PARENT_REVOKED: u32 = 6001;
+pub const E_HOOK_EXPIRED: u32 = 6002;
+pub const E_HOOK_NOT_ALLOWLISTED: u32 = 6003;
+pub const E_HOOK_CAP_EXCEEDED: u32 = 6004;
+
+/// Asserts a call failed *for a specific reason*, not merely that it failed.
+///
+/// `expect_err` above cannot distinguish "leash-hook rejected this" from "Token-2022
+/// said insufficient funds" from "the transaction was a byte-identical duplicate" — all
+/// three are just `is_err()`. That gap is real: it is how the Week 3 `AlreadyProcessed`
+/// false-positives got in, and it is why the cap-vs-balance ambiguity is invisible to
+/// the suite (docs/ROADMAP.md 0.5). Prefer this wherever the *cause* of the rejection is
+/// the thing under test.
+pub fn expect_err_code(res: Result<(), String>, label: &str, code: u32) {
+    let err = match res {
+        Ok(()) => panic!(
+            "expected {} to fail with Custom({}), but it succeeded",
+            label, code
+        ),
+        Err(e) => e,
+    };
+    let needle = format!("Custom({})", code);
+    assert!(
+        err.contains(&needle),
+        "expected {} to fail with {}, but got: {}",
+        label,
+        needle,
+        err
+    );
+    eprintln!("  (expected {} for {}: {})", needle, label, err);
+}
+
 pub fn token_amount(svm: &LiteSVM, pubkey: &Pubkey) -> u64 {
     let data = svm.get_account(pubkey).unwrap().data;
     u64::from_le_bytes(data[64..72].try_into().unwrap())
