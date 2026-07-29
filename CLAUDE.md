@@ -84,7 +84,8 @@ leash/
                                of Week 4; actual tests live in programs/leash-program/tests/
   sdk/ts/                     TypeScript SDK (Week 5, complete)
   cli/                        CLI (Week 5, complete)
-  docs/BUILD_PLAN.md
+  docs/BUILD_PLAN.md          Phase 1 MVP build plan (complete)
+  docs/ROADMAP.md             Path to a usable, mainnet-trustworthy product (not a company roadmap)
 ```
 
 Note: tests live per-crate (`programs/<name>/tests/`, Cargo's native convention), not in
