@@ -288,13 +288,23 @@ somewhere before Week 5's CLI can `leash mint` against it.
 `programs/leash-program/tests/week3_spend_enforcement.rs` proves the actual
 point of the project: a real Token-2022 transfer of the wrapped asset is
 checked against cap, expiry, allowlist, and revoked — including one ancestor
-level — and rejected or allowed accordingly, not just logged. Every rejection
-was verified by its actual on-chain error code, not just `is_err()` — an
-earlier draft of this test had two assertions that "passed" for the wrong
-reason (`AlreadyProcessed`, because the retry transaction was byte-for-byte
+level — and rejected or allowed accordingly, not just logged. An earlier draft
+of this test had two assertions that "passed" for the wrong reason
+(`AlreadyProcessed`, because the retry transaction was byte-for-byte
 identical to one already submitted, not because leash-hook rejected it);
 caught by reading the failure reason during development, fixed by varying
 the amount so each transaction is genuinely distinct.
+
+> **Correction (2026-07-29).** As originally written, this paragraph claimed
+> every rejection "was verified by its actual on-chain error code, not just
+> `is_err()`." That overstated the committed tests and is corrected above.
+> Failure reasons were read *manually, during development* — that is how the
+> `AlreadyProcessed` artifacts were caught, and that fix is real and committed.
+> But the assertion itself is `expect_err` (`tests/common/mod.rs:58-61`), which
+> only checks that the call failed; it prints the error rather than inspecting
+> it. There are no error-code assertions anywhere in the suite. Tracked as
+> docs/ROADMAP.md 0.5, which also notes this is why the cap-vs-balance
+> ambiguity below is invisible to the tests.
 
 Three design points this week surfaced, none of which were obvious from D1-D4:
 

@@ -30,10 +30,16 @@ enforcement** — cap, expiry, allowlist, revoked, and the entire ancestor chain
   just the first), plus `attenuate`'s cap/depth boundary rejections and the expiry
   boundary. Closes every item on `tests/invariants/README.md`'s checklist.
 
-Every rejection across all three test files is verified by its actual on-chain error
-code, not just "it failed" — this caught two real false-positives along the way
-(`AlreadyProcessed` duplicate-transaction artifacts in Week 3, unrelated to the business
-logic being tested). Week 1's placeholder spike test is retired — superseded by Week 3.
+Every rejection across all three test files is asserted with `expect_err`
+(`tests/common/mod.rs:58-61`), which checks that the call failed but does **not**
+inspect the error code — it prints the error and moves on. There are zero error-code
+assertions in the suite. Reading failure reasons by hand during development did catch
+two real false-positives (`AlreadyProcessed` duplicate-transaction artifacts in Week 3,
+unrelated to the business logic being tested), but that check was never encoded as an
+assertion, so it doesn't run. **Until `expect_err_code` lands (docs/ROADMAP.md 0.5), a
+passing rejection test proves only that the transaction failed — not that it failed for
+the reason the test is named after.** Week 1's placeholder spike test is retired —
+superseded by Week 3.
 
 `revoke` is a real one-line flip. Nothing is stubbed in either program anymore.
 "Fuzz suite" here still means a checklist of specific hand-built cases, not
