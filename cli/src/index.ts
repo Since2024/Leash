@@ -147,7 +147,11 @@ program
 
 program
   .command("redeem")
-  .description("Redeem wrapped units 1:1 for the real deposit asset.")
+  .description(
+    "Redeem wrapped units 1:1 for the real deposit asset. Merchants redeem what they " +
+      "were paid; a root capability's owner may cash out only budget it hasn't spent or " +
+      "delegated. A delegated capability cannot redeem — it can only spend.",
+  )
   .requiredOption("--from <tokenAccount>", "Your wrapped-asset token account to burn from")
   .requiredOption("--to <tokenAccount>", "Your real-asset token account to receive into")
   .requiredOption("--amount <amount>", "Amount to redeem")

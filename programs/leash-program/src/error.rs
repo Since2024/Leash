@@ -20,4 +20,6 @@ pub enum LeashError {
     AllowlistTooLarge,
     #[msg("only leash-hook may record a spend")]
     UnauthorizedCaller,
+    #[msg("a delegated capability cannot redeem its budget; only spend it")]
+    DelegatedCannotRedeem,
 }

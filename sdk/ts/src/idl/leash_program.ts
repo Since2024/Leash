@@ -318,6 +318,44 @@ export type LeashProgram = {
           "signer": true
         },
         {
+          "name": "capability",
+          "docs": [
+            "legitimately not exist (a merchant who holds received units and no capability) —",
+            "the handler distinguishes the two by inspecting owner/data rather than trusting",
+            "the caller, so this cannot be typed as `Account<Capability>` or `Option<_>`.",
+            "Mutable because a root's redemption writes `cap` back down.",
+            "",
+            "NOTE: this derivation assumes one capability per owner. When docs/ROADMAP.md 0.3",
+            "lands, capabilities are keyed off their own token account instead, and this",
+            "should derive from `holder_wrapped_account` — at which point the association",
+            "becomes exact rather than \"the capability this holder happens to have.\""
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  112,
+                  97,
+                  98,
+                  105,
+                  108,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "holder"
+              }
+            ]
+          }
+        },
+        {
           "name": "holderWrappedAccount",
           "writable": true
         },
@@ -459,6 +497,11 @@ export type LeashProgram = {
       "code": 6008,
       "name": "unauthorizedCaller",
       "msg": "only leash-hook may record a spend"
+    },
+    {
+      "code": 6009,
+      "name": "delegatedCannotRedeem",
+      "msg": "a delegated capability cannot redeem its budget; only spend it"
     }
   ],
   "types": [

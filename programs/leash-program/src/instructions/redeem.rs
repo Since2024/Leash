@@ -2,16 +2,59 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Transfer};
 use anchor_spl::token_2022::{self as token_2022, Burn};
 
-use crate::constants::AUTHORITY_SEED;
+use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED};
+use crate::error::LeashError;
+use crate::state::Capability;
 
-/// Anyone holding leash-wrapped-USD may redeem it 1:1 for real USDC from the vault.
-/// A separate, explicit instruction — not something the transfer hook can trigger
-/// itself, because Token-2022 transfer hooks receive source/destination accounts as
-/// read-only during the hook call (see BUILD_PLAN.md §5 D2). This is what makes
-/// accepting a Leash payment as good as accepting cash for a merchant.
+/// Redeems leash-wrapped-USD 1:1 for real USDC from the vault. A separate, explicit
+/// instruction — not something the transfer hook can trigger itself, because Token-2022
+/// transfer hooks receive source/destination accounts as read-only during the hook call
+/// (see BUILD_PLAN.md §5 D2). This is what makes accepting a Leash payment as good as
+/// accepting cash for a merchant.
+///
+/// Not "anyone holding wrapped units," though — that was the hole in docs/ROADMAP.md 0.1.
+/// Burning does not fire the transfer hook, so redemption is a path around every check
+/// the hook exists to enforce. This instruction originally never looked at a `Capability`
+/// at all, which meant a delegated agent could burn its *unspent budget* and receive
+/// unrestricted real USDC at any address — defeating the allowlist and revocation for
+/// the entire un-spent balance.
+///
+/// The rule that closes it, in terms of who actually funded the vault:
+///
+///   - **A merchant** (no capability at `[CAPABILITY_SEED, holder]`) redeems freely.
+///     Their units arrived through a real, hook-checked transfer; they earned them.
+///   - **A root capability's owner** redeems freely too, but only out of budget that is
+///     genuinely free (`cap - spent - committed_to_children`), and `cap` shrinks to
+///     match. They deposited into the vault, so unwinding is theirs to do; the bound is
+///     what stops them draining collateral their children's units are minted against.
+///   - **A delegated (child) capability's owner cannot redeem its budget at all.** It
+///     never deposited anything. It may *spend*, through the hook, to an allowlisted
+///     destination — that is the whole point of the capability.
+///
+/// The capability account is derived and passed unconditionally rather than made
+/// optional: a caller who could simply omit it could opt out of the check entirely.
+/// A holder with no capability passes a PDA that does not exist, and the handler
+/// verifies that on-chain rather than taking the caller's word for it.
 #[derive(Accounts)]
 pub struct Redeem<'info> {
     pub holder: Signer<'info>,
+
+    /// CHECK: the holder's Capability PDA, address-verified by the seeds constraint. May
+    /// legitimately not exist (a merchant who holds received units and no capability) —
+    /// the handler distinguishes the two by inspecting owner/data rather than trusting
+    /// the caller, so this cannot be typed as `Account<Capability>` or `Option<_>`.
+    /// Mutable because a root's redemption writes `cap` back down.
+    ///
+    /// NOTE: this derivation assumes one capability per owner. When docs/ROADMAP.md 0.3
+    /// lands, capabilities are keyed off their own token account instead, and this
+    /// should derive from `holder_wrapped_account` — at which point the association
+    /// becomes exact rather than "the capability this holder happens to have."
+    #[account(
+        mut,
+        seeds = [CAPABILITY_SEED.as_bytes(), holder.key().as_ref()],
+        bump,
+    )]
+    pub capability: UncheckedAccount<'info>,
 
     /// CHECK: holder's Token-2022 account holding wrapped units — burned from here.
     #[account(mut)]
@@ -41,6 +84,57 @@ pub struct Redeem<'info> {
 }
 
 pub fn redeem_handler(ctx: Context<Redeem>, amount: u64) -> Result<()> {
+    // 0. Authorize the redemption itself (docs/ROADMAP.md 0.1). See the struct doc above
+    // for the rule; this is where it is enforced.
+    //
+    // A capability exists only if leash-program owns the account and it holds data —
+    // nobody else can create an account at this PDA, since producing its signature
+    // requires this program. An empty/system-owned account at the derived address means
+    // "this holder has no capability," which is checked here rather than asserted by the
+    // caller.
+    let capability_info = ctx.accounts.capability.to_account_info();
+    let holder_has_capability =
+        capability_info.owner == &crate::ID && !capability_info.data_is_empty();
+
+    if holder_has_capability {
+        let mut capability: Capability = {
+            let data = capability_info.try_borrow_data()?;
+            Capability::try_deserialize(&mut &data[..])?
+        };
+
+        // Only units sitting in the capability's *own* token account are unspent budget.
+        // Anything else this holder controls arrived through a hook-checked transfer and
+        // is theirs to cash out like any merchant's.
+        if ctx.accounts.holder_wrapped_account.key() == capability.token_account {
+            // A delegatee never funded the vault, so it has no claim on it. It can still
+            // spend through the hook — that path is untouched.
+            require!(capability.depth == 0, LeashError::DelegatedCannotRedeem);
+
+            // A root may unwind only what it hasn't already spent or promised away.
+            // Without the `committed_to_children` term, a parent could drain the vault
+            // and strand the units minted against it for its children — the same
+            // collateral shortfall as docs/ROADMAP.md 0.2, reached through redemption
+            // instead of spending.
+            let free = capability
+                .cap
+                .checked_sub(capability.spent)
+                .and_then(|v| v.checked_sub(capability.committed_to_children))
+                .ok_or(LeashError::CapExceeded)?;
+            require!(amount <= free, LeashError::CapExceeded);
+
+            // Shrink the budget to match the collateral actually left behind. Skipping
+            // this would leave the capability advertising spending power the vault no
+            // longer backs (docs/ROADMAP.md 0.7).
+            capability.cap = capability
+                .cap
+                .checked_sub(amount)
+                .ok_or(LeashError::CapExceeded)?;
+
+            let mut data = capability_info.try_borrow_mut_data()?;
+            capability.try_serialize(&mut &mut data[..])?;
+        }
+    }
+
     // 1. Burn `amount` wrapped units from the holder's account. The holder signs this
     // directly (they own the account) — no program authority needed to destroy value.
     token_2022::burn(

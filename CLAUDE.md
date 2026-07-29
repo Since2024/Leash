@@ -20,7 +20,7 @@ enforcement** — cap, expiry, allowlist, revoked, and the entire ancestor chain
 `MAX_DEPTH`:
 
 - `programs/leash-program/tests/common/mod.rs` — shared test helpers (setup, issue,
-  attenuate, revoke, redeem, spend) used by all four test files below.
+  attenuate, revoke, redeem, spend) used by all five test files below.
 - `week2_issue_redeem.rs` — Week 2: a full deposit -> issue -> redeem round trip.
 - `week3_spend_enforcement.rs` — Week 3: `attenuate` and a real Token-2022 transfer
   checked against cap/expiry/allowlist/revoked, including one ancestor level.
@@ -33,14 +33,21 @@ enforcement** — cap, expiry, allowlist, revoked, and the entire ancestor chain
   is actually enforced on the spend path. A parent could spend budget it had already
   delegated to a child, so a tree could spend more than the deposit backing it
   (docs/ROADMAP.md 0.2, now fixed). Verified to fail without the fix.
+- `redeem_authorization.rs` — post-MVP: proves `redeem` can't be used to walk around the
+  hook. Burning fires no transfer hook, and `redeem` consulted no `Capability`, so a
+  delegated agent could cash out its unspent budget to any address (docs/ROADMAP.md 0.1,
+  now fixed). Redemption is now gated on who funded the vault: merchants freely, a root
+  only up to `cap - spent - committed_to_children` (with `cap` written back down), a
+  delegated capability never. Verified to fail without the fix.
 
 **Two assertion helpers, and the difference matters.** `expect_err`
 (`tests/common/mod.rs`) checks only that a call failed — it prints the error without
 inspecting it. `expect_err_code` asserts a specific on-chain error code. The three
 `week*` files still use the weaker one, so **their rejections are not verified as to
 cause**: a passing rejection test there proves the transaction failed, not that it
-failed for the reason the test is named after. `conservation_invariant.rs` uses
-`expect_err_code` throughout. Converting the rest is tracked as docs/ROADMAP.md 0.5.
+failed for the reason the test is named after. `conservation_invariant.rs` and
+`redeem_authorization.rs` use `expect_err_code` throughout. Converting the rest is
+tracked as docs/ROADMAP.md 0.5.
 Prefer `expect_err_code` for anything new. Week 1's placeholder spike test is retired —
 superseded by Week 3.
 
@@ -88,6 +95,7 @@ leash/
       week3_spend_enforcement.rs
       week4_ancestor_chain_and_fuzz.rs
       conservation_invariant.rs
+      redeem_authorization.rs
   programs/leash-hook/
     src/                      Token-2022 TransferHook enforcement
   tests/invariants/           Tracking checklist for BUILD_PLAN.md §8 — fully checked as

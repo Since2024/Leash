@@ -63,6 +63,7 @@ pub fn expect_err(res: Result<(), String>, label: &str) {
 /// Anchor's `#[error_code]` numbers variants from 6000, so a `LeashError` /
 /// `LeashHookError` variant at index N surfaces on-chain as `Custom(6000 + N)`.
 pub const E_LEASH_CAP_EXCEEDED: u32 = 6000; // LeashError::CapExceeded (index 0)
+pub const E_LEASH_DELEGATED_CANNOT_REDEEM: u32 = 6009; // last variant in error.rs
 pub const E_HOOK_REVOKED: u32 = 6000; // LeashHookError::Revoked (index 0)
 pub const E_HOOK_PARENT_REVOKED: u32 = 6001;
 pub const E_HOOK_EXPIRED: u32 = 6002;
@@ -380,6 +381,9 @@ pub fn redeem(
         program_id: PROGRAM_ID,
         accounts: leash_program::accounts::Redeem {
             holder: holder.pubkey(),
+            // Always passed, existent or not — see redeem.rs's doc comment on why this
+            // can't be optional without reopening docs/ROADMAP.md 0.1.
+            capability: capability_pda(&holder.pubkey()),
             holder_wrapped_account,
             wrapped_mint: s.wrapped_mint,
             vault: s.vault,

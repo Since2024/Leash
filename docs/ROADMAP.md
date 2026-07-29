@@ -34,16 +34,18 @@ end-to-end against a real validator. Nothing on mainnet, and per BUILD_PLAN.md �
 stays true until at minimum Phase 0 and Phase 1 below are closed.
 
 Two of the Phase 0 items below were **critical** — either one, on its own, sufficient to
-lose depositor funds, and both reachable without any unusual behaviour. 0.2 is now fixed
-and covered by tests that fail without the fix. **0.1 remains open.**
+lose depositor funds, and both reachable without any unusual behaviour. Both (0.1, 0.2)
+are now fixed, each covered by tests verified to fail without their fix. The remaining
+Phase 0 items are real but none of them lose money on their own.
 
 ---
 
 ## Phase 0 — Correctness gaps that block mainnet
 
-### 0.1 `redeem` bypasses the capability entirely — **critical**
+### 0.1 `redeem` bypassed the capability entirely — **critical**
 
-- [ ] **A capability holder can convert its unspent budget into unrestricted real USDC.**
+- [x] **Fixed.** A capability holder could convert its unspent budget into unrestricted
+      real USDC.
 
 `redeem` (`programs/leash-program/src/instructions/redeem.rs`) burns wrapped units from
 any token account its signer controls and pays out the deposit asset 1:1. It never
@@ -68,23 +70,46 @@ wrapped units cashing them out, which is what makes accepting Leash "as good as 
 The gap is that nothing distinguishes a merchant's *received* units from a capability's
 *unspent* ones. Both are just wrapped-token balances.
 
-Fix directions, roughly in order of how much they cost:
+**The fix, as landed.** None of the three directions originally sketched here survived
+contact with the code. Two of them ("reject when the source *is* a capability's token
+account") would have broken the legitimate unwind path: `week2_issue_redeem.rs` redeems
+from exactly that account, as the root principal, and blocking it would mean the person
+who funded the vault could never get their deposit back. The third (route redemption
+through the hook) fails differently — the hook resolves a capability from the source's
+owner, and a merchant has none, so merchants could no longer redeem at all.
 
-1. Require a `Capability` account on the redeem path and reject when
-   `holder_wrapped_account == capability.token_account` — i.e. only units that have
-   *moved* (been received through a hook-checked transfer) are redeemable. Needs a way
-   to tell "this account is some capability's token account" cheaply. **Depends on 0.3**,
-   which makes the token account a PDA at `[TOKEN_ACCOUNT_SEED, owner, nonce]` and so
-   derivable; without 0.3 there is no cheap test.
-2. Make capability token accounts non-redeemable by construction — e.g. redeem only from
-   accounts that are *not* leash-program PDAs. **Also depends on 0.3.**
-3. Route redemption through the hook by making it a transfer to a program-owned
-   redemption account, so the existing allowlist/revoked checks apply unchanged. This is
-   the only direction that does not depend on 0.3.
+The distinction that actually works is **who funded the vault**:
 
-Whichever is chosen, it needs a test per property, in the style of the existing suite —
-and per 0.5, that test must assert the specific error code, not merely that the call
-failed.
+| Holder | May redeem? |
+|---|---|
+| Merchant (no capability at `[CAPABILITY_SEED, holder]`) | Yes, freely — the units arrived through a real, hook-checked transfer |
+| Root capability owner (`depth == 0`) | Yes, but only `cap - spent - committed_to_children`, and `cap` shrinks by the amount redeemed |
+| Delegated capability owner (`depth > 0`) | **No.** It never deposited. It may still spend through the hook to an allowlisted destination |
+
+`redeem` now takes the holder's Capability PDA, address-verified by a `seeds`
+constraint. It is passed unconditionally rather than as an `Option`: a caller able to
+omit it could opt out of the check entirely. A holder with no capability passes a PDA
+that does not exist, and the handler verifies non-existence on-chain (program-owned and
+non-empty) instead of trusting the caller.
+
+The root bound matters as much as the child ban: without the `committed_to_children`
+term a parent could drain the vault and strand the units minted for its children — the
+same collateral shortfall as 0.2, reached through redemption instead of spending.
+Shrinking `cap` in step keeps the capability from advertising spending power the vault
+no longer backs, and is verified: after redeeming its free budget the root's next spend
+is rejected.
+
+Covered by `programs/leash-program/tests/redeem_authorization.rs` — the delegated
+cash-out attempt (also when revoked), the merchant path still working, and the root
+boundary with its `cap` write-back. **Verified to fail without the fix**: with the
+authorization block disabled and the program rebuilt, the delegated agent's redemption
+succeeds and the root drains past its committed budget.
+
+Two things this deliberately does not do: reclaiming a finished child's reservation back
+to its parent needs a new instruction (nothing releases `committed_to_children` today),
+and the derivation assumes one capability per owner, so it must be revisited when 0.3
+lands — at that point it should derive from `holder_wrapped_account`, making the
+association exact rather than "the capability this holder happens to have."
 
 ### 0.2 `committed_to_children` was never enforced on the spend path — **critical**
 
@@ -154,10 +179,11 @@ failure check. **Verified to fail without the fix**: with the two checks reverte
 programs rebuilt, all three fail with "expected … to fail with Custom(6004), but it
 succeeded."
 
-**Interaction with 0.1:** 0.1 is unaffected and still open. Fixing 0.2 bounds what a
-capability tree can *spend*; it does nothing about `redeem`, which never consults a
-Capability at all. An agent can still cash out its unspent balance to an arbitrary
-address.
+**Interaction with 0.1:** the two are independent and were fixed separately. 0.2 bounds
+what a capability tree can *spend*; it says nothing about redemption, which does not go
+through the hook at all. 0.1's fix carries the same `committed_to_children` term into
+the redeem path for exactly this reason — otherwise the shortfall 0.2 closes would still
+be reachable by cashing out instead of spending.
 
 ### 0.3 One owner can only ever hold one capability
 
@@ -269,13 +295,27 @@ not that it is *this* transfer's.
 
       Blocked on 0.3; meaningless before it.
 
-### 0.7 `redeem` doesn't reconcile against the Capability
+### 0.7 Budget reserved for a child is never released back
 
-- [ ] Separate from 0.1's authorization hole, redeeming leaves `cap` and `spent`
-      untouched, so a Capability's recorded budget can outlive the tokens backing it.
-      A capability reporting "$400 of $400 remaining" whose token account has been
-      drained to zero is a confusing lie, even once 0.1 makes it unreachable by an
-      untrusted holder.
+- [x] **Reconciliation on redeem: fixed as part of 0.1.** Redeeming used to leave `cap`
+      and `spent` untouched, so a capability's recorded budget could outlive the tokens
+      backing it. A root's redemption now decrements `cap` by the amount taken out, which
+      is asserted directly (`root_redemption_is_bounded_by_committed_budget`) — including
+      that a root which has redeemed its free budget can no longer spend. The other two
+      redeem paths need no reconciliation: a merchant has no capability, and a delegated
+      capability cannot redeem at all.
+
+- [ ] **Still open: nothing releases `committed_to_children`.** When a child is finished
+      with — revoked, expired, or simply done — the budget its parent reserved stays
+      reserved forever. The parent cannot spend it (0.2 enforces the reservation) and
+      cannot redeem it (0.1 bounds redemption by the same term), so the collateral is
+      stranded, correctly but permanently.
+
+      This is the cost of both critical fixes being conservative: they close the holes by
+      refusing, and nothing yet un-refuses. Needs a `release`/`reclaim` instruction that
+      burns a revoked child's unspent units and decrements the parent's
+      `committed_to_children` by the same amount — the only way to do it without
+      reopening 0.2, since the two numbers have to move together.
 
 ### 0.8 Allowlist ergonomics and size
 
@@ -426,8 +466,8 @@ Concretely, so it's falsifiable rather than a vibe:
 
 Until then: devnet. BUILD_PLAN.md §10 names real-money temptation as a specific risk of
 this project, and 0.1 and 0.2 above are concrete demonstrations that the instinct was
-right — two fund-losing bugs in a codebase whose tests were all green, one of them still
-open.
+right — two fund-losing bugs in a codebase whose tests were all green. Both are fixed;
+what should carry forward is that a green suite said nothing about either one.
 
 ## Verification approach
 
