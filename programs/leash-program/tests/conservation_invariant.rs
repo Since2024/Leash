@@ -57,11 +57,12 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
         &mut svm,
         &s,
         &parent_owner,
+        0,
         1_000,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let parent_capability = capability_pda(&parent_owner.pubkey());
+    let (parent_capability, parent_ta) = capability_for(&parent_owner.pubkey(), 0);
 
     // 2. Delegate 400 of it to a child. This mints 400 *fresh* units to the child and
     //    reserves 400 on the parent — the parent's own token account is untouched and
@@ -73,11 +74,12 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
         &parent_owner,
         parent_capability,
         &child_owner,
+        0,
         400,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let child_capability = capability_pda(&child_owner.pubkey());
+    let (child_capability, child_ta) = capability_for(&child_owner.pubkey(), 0);
 
     let parent = capability_state(&svm, &parent_capability);
     assert_eq!(parent.cap, 1_000);
@@ -87,7 +89,7 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
     assert_eq!(
         token_amount(
             &svm,
-            &ata(&parent_owner.pubkey(), &s.wrapped_mint, &spl_token_2022::id())
+            &parent_ta
         ),
         1_000
     );
@@ -95,7 +97,7 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
     // 3. THE BUG. 601 is within `cap - spent` (1_000) but past `cap - spent - committed`
     //    (600). Pre-fix, the hook computed `0 + 601 <= 1_000` and allowed it.
     expect_err_code(
-        spend(&mut svm, &s, &parent_owner, &merchant_ata, 601),
+        spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 601),
         "parent spending into budget already delegated to its child",
         E_HOOK_CAP_EXCEEDED,
     );
@@ -105,12 +107,12 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
     // 4. Exactly the free budget still works — the fix bounds the parent, it doesn't
     //    freeze it. (600, not 601, so this is a genuinely distinct transaction and
     //    cannot pass as an `AlreadyProcessed` artifact of the call above.)
-    expect_ok(spend(&mut svm, &s, &parent_owner, &merchant_ata, 600));
+    expect_ok(spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 600));
     assert_eq!(capability_state(&svm, &parent_capability).spent, 600);
 
     // 5. The child's delegated budget is still fully intact and independently spendable —
     //    the parent spending its own share did not eat into the child's.
-    expect_ok(spend(&mut svm, &s, &child_owner, &merchant_ata, 400));
+    expect_ok(spend(&mut svm, &s, &child_owner, &child_ta, &merchant_ata, 400));
     assert_eq!(capability_state(&svm, &child_capability).spent, 400);
 
     // 6. Conservation holds at every node, and the tree spent exactly the deposit that
@@ -126,7 +128,7 @@ fn parent_cannot_spend_budget_already_delegated_to_a_child() {
     //    even though its token account still shows a 400 balance (those units are the
     //    child's, minted against the same deposit).
     expect_err_code(
-        spend(&mut svm, &s, &parent_owner, &merchant_ata, 1),
+        spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 1),
         "parent spending after exhausting its non-delegated budget",
         E_HOOK_CAP_EXCEEDED,
     );
@@ -159,11 +161,12 @@ fn delegated_budget_boundary_is_exact() {
         &mut svm,
         &s,
         &parent_owner,
+        0,
         1_000,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let parent_capability = capability_pda(&parent_owner.pubkey());
+    let (parent_capability, parent_ta) = capability_for(&parent_owner.pubkey(), 0);
 
     let child_owner = Keypair::new();
     expect_ok(attenuate(
@@ -172,6 +175,7 @@ fn delegated_budget_boundary_is_exact() {
         &parent_owner,
         parent_capability,
         &child_owner,
+        0,
         400,
         FAR_FUTURE,
         vec![merchant_ata],
@@ -179,12 +183,12 @@ fn delegated_budget_boundary_is_exact() {
 
     // One over the line.
     expect_err_code(
-        spend(&mut svm, &s, &parent_owner, &merchant_ata, 601),
+        spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 601),
         "spend one unit past the undelegated budget",
         E_HOOK_CAP_EXCEEDED,
     );
     // Exactly on it.
-    expect_ok(spend(&mut svm, &s, &parent_owner, &merchant_ata, 600));
+    expect_ok(spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 600));
 
     let parent = capability_state(&svm, &parent_capability);
     assert_eq!(parent.spent, 600);
@@ -219,11 +223,12 @@ fn multiple_children_reservations_accumulate() {
         &mut svm,
         &s,
         &parent_owner,
+        0,
         1_000,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let parent_capability = capability_pda(&parent_owner.pubkey());
+    let (parent_capability, parent_ta) = capability_for(&parent_owner.pubkey(), 0);
 
     for child_cap in [300u64, 300] {
         let child_owner = Keypair::new();
@@ -233,6 +238,7 @@ fn multiple_children_reservations_accumulate() {
             &parent_owner,
             parent_capability,
             &child_owner,
+            0,
             child_cap,
             FAR_FUTURE,
             vec![merchant_ata],
@@ -244,11 +250,11 @@ fn multiple_children_reservations_accumulate() {
     );
 
     expect_err_code(
-        spend(&mut svm, &s, &parent_owner, &merchant_ata, 401),
+        spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 401),
         "spend past the sum of both children's reservations",
         E_HOOK_CAP_EXCEEDED,
     );
-    expect_ok(spend(&mut svm, &s, &parent_owner, &merchant_ata, 400));
+    expect_ok(spend(&mut svm, &s, &parent_owner, &parent_ta, &merchant_ata, 400));
 
     let parent = capability_state(&svm, &parent_capability);
     assert_eq!(parent.spent + parent.committed_to_children, parent.cap);

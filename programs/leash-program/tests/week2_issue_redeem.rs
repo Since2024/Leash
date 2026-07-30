@@ -10,7 +10,6 @@ mod common;
 use common::*;
 
 use anchor_lang::prelude::Pubkey;
-use anchor_spl::token_2022::spl_token_2022;
 use litesvm::LiteSVM;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
@@ -21,11 +20,10 @@ fn deposit_issue_redeem_round_trip() {
     let s = setup(&mut svm);
 
     let principal = Keypair::new();
-    let capability = capability_pda(&principal.pubkey());
-    let capability_token_account = ata(&principal.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let (capability, capability_token_account) = capability_for(&principal.pubkey(), 0);
 
     // --- issue: deposit 400, get a $400 capability. ---
-    expect_ok(issue(&mut svm, &s, &principal, 400, 9_999_999_999, vec![]));
+    expect_ok(issue(&mut svm, &s, &principal, 0, 400, 9_999_999_999, vec![]));
 
     assert_eq!(token_amount(&svm, &s.vault), 400);
     assert_eq!(token_amount(&svm, &capability_token_account), 400);

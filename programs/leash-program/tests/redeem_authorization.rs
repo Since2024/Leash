@@ -80,11 +80,12 @@ fn delegated_capability_cannot_redeem_its_budget() {
         &mut svm,
         &s,
         &principal,
+        0,
         1_000,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let principal_capability = capability_pda(&principal.pubkey());
+    let (principal_capability, _principal_ta) = capability_for(&principal.pubkey(), 0);
 
     let agent = Keypair::new();
     expect_ok(attenuate(
@@ -93,12 +94,13 @@ fn delegated_capability_cannot_redeem_its_budget() {
         &principal,
         principal_capability,
         &agent,
+        0,
         200,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
 
-    let agent_wrapped = ata(&agent.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let agent_wrapped = token_account_pda(&agent.pubkey(), 0);
     let agent_usdc = usdc_account(&mut svm, &s, &agent);
     assert_eq!(token_amount(&svm, &agent_wrapped), 200);
 
@@ -118,7 +120,7 @@ fn delegated_capability_cannot_redeem_its_budget() {
         &mut svm,
         &s,
         &agent,
-        capability_pda(&agent.pubkey()),
+        capability_for(&agent.pubkey(), 0).0,
     ));
     expect_err_code(
         redeem(&mut svm, &s, &agent, agent_wrapped, agent_usdc, 150),
@@ -136,11 +138,12 @@ fn delegated_capability_cannot_redeem_its_budget() {
         &principal,
         principal_capability,
         &agent2,
+        0,
         100,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    expect_ok(spend(&mut svm, &s, &agent2, &merchant_ata, 100));
+    expect_ok(spend(&mut svm, &s, &agent2, &token_account_pda(&agent2.pubkey(), 0), &merchant_ata, 100));
     assert_eq!(token_amount(&svm, &merchant_ata), 100);
 }
 
@@ -168,16 +171,18 @@ fn merchant_can_still_redeem_what_it_was_paid() {
     let merchant_usdc = usdc_account(&mut svm, &s, &merchant);
 
     let principal = Keypair::new();
+    let (_, principal_ta) = capability_for(&principal.pubkey(), 0);
     expect_ok(issue(
         &mut svm,
         &s,
         &principal,
+        0,
         500,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
 
-    expect_ok(spend(&mut svm, &s, &principal, &merchant_ata, 300));
+    expect_ok(spend(&mut svm, &s, &principal, &principal_ta, &merchant_ata, 300));
     assert_eq!(token_amount(&svm, &merchant_ata), 300);
 
     // The merchant holds no capability at all, so redemption is unrestricted.
@@ -221,12 +226,13 @@ fn root_redemption_is_bounded_by_committed_budget() {
         &mut svm,
         &s,
         &principal,
+        0,
         1_000,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    let principal_capability = capability_pda(&principal.pubkey());
-    let principal_wrapped = ata(&principal.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let (principal_capability, principal_ta) = capability_for(&principal.pubkey(), 0);
+    let principal_wrapped = principal_ta;
     let principal_usdc = ata(&principal.pubkey(), &s.usdc_mint, &spl_token::id());
 
     // Delegate 400, then spend 100. Free budget is 1_000 - 100 - 400 = 500.
@@ -237,11 +243,12 @@ fn root_redemption_is_bounded_by_committed_budget() {
         &principal,
         principal_capability,
         &agent,
+        0,
         400,
         FAR_FUTURE,
         vec![merchant_ata],
     ));
-    expect_ok(spend(&mut svm, &s, &principal, &merchant_ata, 100));
+    expect_ok(spend(&mut svm, &s, &principal, &principal_ta, &merchant_ata, 100));
 
     // Redeeming past the free budget would drain collateral the agent's 400 units are
     // minted against — the docs/ROADMAP.md 0.2 shortfall, reached via redemption.
@@ -282,12 +289,12 @@ fn root_redemption_is_bounded_by_committed_budget() {
     // And having redeemed its free budget, the root can no longer spend — `cap` came
     // down with it rather than leaving phantom spending power behind.
     expect_err_code(
-        spend(&mut svm, &s, &principal, &merchant_ata, 1),
+        spend(&mut svm, &s, &principal, &principal_ta, &merchant_ata, 1),
         "root spending after redeeming its free budget",
         E_HOOK_CAP_EXCEEDED,
     );
 
     // The agent's delegated budget survived all of it, and is still spendable.
-    expect_ok(spend(&mut svm, &s, &agent, &merchant_ata, 400));
+    expect_ok(spend(&mut svm, &s, &agent, &token_account_pda(&agent.pubkey(), 0), &merchant_ata, 400));
     assert_eq!(token_amount(&svm, &merchant_ata), 500);
 }
