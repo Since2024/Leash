@@ -21,22 +21,36 @@ declare_id!("Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk");
 pub mod leash_program {
     use super::*;
 
+    /// `nonce` distinguishes this capability's token account from any other the same
+    /// principal holds, and so distinguishes the capability itself — see
+    /// constants::CAPABILITY_SEED. Callers who don't care may pass any value they
+    /// haven't used before; the SDK generates a random `u64`.
     pub fn issue(
         ctx: Context<Issue>,
+        nonce: u64,
         cap: u64,
         expiry: i64,
         allowlist: Vec<Pubkey>,
     ) -> Result<()> {
-        instructions::issue::issue_handler(ctx, cap, expiry, allowlist)
+        instructions::issue::issue_handler(ctx, nonce, cap, expiry, allowlist)
     }
 
+    /// `nonce` plays the same role as in `issue`, scoped to `child_owner` — which is what
+    /// lets one parent delegate to the same owner more than once.
     pub fn attenuate(
         ctx: Context<Attenuate>,
+        nonce: u64,
         child_cap: u64,
         child_expiry: i64,
         child_allowlist: Vec<Pubkey>,
     ) -> Result<()> {
-        instructions::attenuate::attenuate_handler(ctx, child_cap, child_expiry, child_allowlist)
+        instructions::attenuate::attenuate_handler(
+            ctx,
+            nonce,
+            child_cap,
+            child_expiry,
+            child_allowlist,
+        )
     }
 
     pub fn revoke(ctx: Context<Revoke>) -> Result<()> {
