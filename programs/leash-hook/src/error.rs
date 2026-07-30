@@ -12,4 +12,6 @@ pub enum LeashHookError {
     NotAllowlisted,
     #[msg("spend would exceed this capability's remaining budget")]
     CapExceeded,
+    #[msg("source account is not this capability's token account")]
+    WrongTokenAccount,
 }

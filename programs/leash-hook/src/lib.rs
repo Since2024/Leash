@@ -26,15 +26,15 @@ pub mod leash_hook {
     /// derived dynamically per-transfer instead of Week 1's fixed placeholder.
     ///
     /// Every Capability (root from `issue`, or child from `attenuate`) is seeded as
-    /// `[CAPABILITY_SEED, owner]` — one fixed formula regardless of root/child status,
-    /// which is exactly what makes deriving it here possible (see attenuate.rs's doc
-    /// comment on why the child seed scheme had to change to match).
+    /// `[CAPABILITY_SEED, <its own token account>]` — one fixed formula regardless of
+    /// root/child status, which is exactly what makes deriving it here possible (see
+    /// attenuate.rs's doc comment on why both schemes must match).
     ///
     /// Extra accounts registered, in order (indices 5-10, after the 5 base accounts):
     ///   5. leash_program's own ID — needed as the "owning program" anchor for the PDA
     ///      derivation below (Capability accounts belong to leash-program, not this
     ///      hook), and reused as the CPI target account in `spend_logic`.
-    ///   6. source_capability — external PDA, `[CAPABILITY_SEED, owner]` under
+    ///   6. source_capability — external PDA, `[CAPABILITY_SEED, source_token_account]` under
     ///      leash-program. Writable: `record_spend` (via CPI) mutates it.
     ///   7-9. ancestor1 / ancestor2 / ancestor3 — each read directly out of
     ///      **source_capability's own** `ancestors` array (`ANCESTORS_FIELD_OFFSET`),
@@ -62,7 +62,14 @@ pub mod leash_hook {
                     Seed::Literal {
                         bytes: leash_program::CAPABILITY_SEED.as_bytes().to_vec(),
                     },
-                    Seed::AccountKey { index: 3 }, // "owner" — base account 3
+                    // Base account 0 — the transfer's *source token account*, not its
+                    // owner. The Transfer Hook Interface supplies it on every transfer,
+                    // so the nonce folded into its address (see leash-program's
+                    // TOKEN_ACCOUNT_SEED) reaches us for free, without this formula
+                    // needing to accept a client-chosen value it has no way to verify.
+                    // Keying on the owner instead is what limited each owner to a single
+                    // capability — docs/ROADMAP.md 0.3.
+                    Seed::AccountKey { index: 0 },
                 ],
                 false,
                 true,
@@ -200,6 +207,17 @@ fn spend_logic(accounts: &[AccountInfo], amount: u64) -> Result<()> {
         AnchorDeserialize::deserialize(&mut &data[8..])
             .map_err(|_| ProgramError::InvalidAccountData)?
     };
+
+    // The capability must be the one belonging to *this* source account. Address
+    // derivation already ties them together — accounts[6] is resolved from accounts[0] —
+    // so this is belt-and-braces against `token_account` being set wrong at issue time
+    // rather than against a forged account. It is cheap, and until now the field was
+    // written twice and read by nothing at all (docs/ROADMAP.md 0.4), which is the sort
+    // of thing that quietly stops being true.
+    require!(
+        accounts[0].key() == capability.token_account,
+        LeashHookError::WrongTokenAccount
+    );
 
     require!(!capability.revoked, LeashHookError::Revoked);
     let now = Clock::get()?.unix_timestamp;
