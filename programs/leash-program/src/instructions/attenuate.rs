@@ -1,8 +1,10 @@
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::spl_associated_token_account;
 use anchor_spl::token_2022::{self as token_2022, MintTo};
+use anchor_spl::token_interface::{Mint, TokenAccount};
 
-use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN, MAX_DEPTH};
+use crate::constants::{
+    AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN, MAX_DEPTH, TOKEN_ACCOUNT_SEED,
+};
 use crate::error::LeashError;
 use crate::state::Capability;
 
@@ -11,7 +13,7 @@ use crate::state::Capability;
 /// hook — attenuation is a mint to a new account, not a transfer to a destination. See
 /// BUILD_PLAN.md §4 "attenuate" and §5 D3 for why that asymmetry is the point.
 #[derive(Accounts)]
-#[instruction(child_cap: u64, child_expiry: i64, child_allowlist: Vec<Pubkey>)]
+#[instruction(nonce: u64, child_cap: u64, child_expiry: i64, child_allowlist: Vec<Pubkey>)]
 pub struct Attenuate<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
@@ -26,46 +28,59 @@ pub struct Attenuate<'info> {
     /// the parent's owner is the one authorizing this attenuation, not the child.
     pub child_owner: UncheckedAccount<'info>,
 
-    // Seeded on `child_owner` alone (same scheme as issue's root capability), NOT
-    // [parent, child_owner]. This is load-bearing, not a style choice: leash-hook has to
-    // derive "the Capability for this transfer" using only the transfer's own accounts
-    // (specifically the token account's owner, per the Transfer Hook Interface), with
-    // ONE fixed seed formula it registers once at mint-creation time. Two different
-    // derivation schemes for root vs. child capabilities can't both be that one formula.
-    // Consequence, documented rather than hidden: one owner can hold at most one active
-    // capability (root or child) at a time — attenuating to an owner who already has one
-    // fails the `init` constraint below, by design, not by oversight.
-    #[account(
-        init,
-        payer = owner,
-        space = Capability::MAX_SIZE,
-        seeds = [CAPABILITY_SEED.as_bytes(), child_owner.key().as_ref()],
-        bump,
-    )]
-    pub child_capability: Account<'info, Capability>,
-
-    /// CHECK: leash-wrapped-USD mint. Mutable because minting increases supply.
+    /// leash-wrapped-USD mint. Mutable because minting increases supply. Typed so Anchor
+    /// can read its extensions to size the child's token account.
     #[account(mut)]
-    pub wrapped_mint: UncheckedAccount<'info>,
+    pub wrapped_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: PDA that is the wrapped mint's mint authority.
     #[account(seeds = [AUTHORITY_SEED.as_bytes()], bump)]
     pub program_authority: UncheckedAccount<'info>,
 
-    /// CHECK: fresh Token-2022 account holding the child's wrapped balance, created here
-    /// via CPI, owned by `child_owner` directly (same bearer-object model as `issue`).
-    #[account(mut)]
-    pub child_token_account: UncheckedAccount<'info>,
+    /// The child's own wrapped-token account, at `[TOKEN_ACCOUNT_SEED, child_owner,
+    /// nonce]`, owned by `child_owner` directly (same bearer-object model as `issue`).
+    /// Declared before `child_capability`, whose seeds reference it.
+    #[account(
+        init,
+        payer = owner,
+        seeds = [TOKEN_ACCOUNT_SEED.as_bytes(), child_owner.key().as_ref(), &nonce.to_le_bytes()],
+        bump,
+        token::mint = wrapped_mint,
+        token::authority = child_owner,
+        token::token_program = token_2022_program,
+    )]
+    pub child_token_account: InterfaceAccount<'info, TokenAccount>,
+
+    // Root and child capabilities share one derivation — `[CAPABILITY_SEED, <the
+    // capability's own token account>]` — and that sameness is load-bearing, not tidiness.
+    // leash-hook derives "the Capability for this transfer" from ONE fixed seed formula,
+    // registered into the mint's ExtraAccountMetaList at deployment, resolvable only from
+    // accounts the transfer already carries. Root and child cannot use different schemes
+    // and both still be that one formula.
+    //
+    // What changed in docs/ROADMAP.md 0.3 is *which* account both are keyed on. It used
+    // to be the owner, which meant one capability per owner forever — attenuating twice
+    // to the same agent collided on the second `init`. Keying on the capability's own
+    // token account keeps the single formula (the hook reads base account 0, the source
+    // token account) while letting the nonce in that account's seeds do the
+    // disambiguating.
+    #[account(
+        init,
+        payer = owner,
+        space = Capability::MAX_SIZE,
+        seeds = [CAPABILITY_SEED.as_bytes(), child_token_account.key().as_ref()],
+        bump,
+    )]
+    pub child_capability: Account<'info, Capability>,
 
     /// CHECK: Token-2022 program, for minting child_cap wrapped units.
     pub token_2022_program: UncheckedAccount<'info>,
-    /// CHECK: associated-token-account program, for creating child_token_account.
-    pub associated_token_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
 pub fn attenuate_handler(
     ctx: Context<Attenuate>,
+    _nonce: u64,
     child_cap: u64,
     child_expiry: i64,
     child_allowlist: Vec<Pubkey>,
@@ -90,23 +105,8 @@ pub fn attenuate_handler(
         LeashError::NotASubset
     );
 
-    // Create the child's wrapped-token account (ATA, owned by child_owner).
-    anchor_lang::solana_program::program::invoke(
-        &spl_associated_token_account::instruction::create_associated_token_account(
-            ctx.accounts.owner.key,
-            ctx.accounts.child_owner.key,
-            ctx.accounts.wrapped_mint.key,
-            ctx.accounts.token_2022_program.key,
-        ),
-        &[
-            ctx.accounts.owner.to_account_info(),
-            ctx.accounts.child_token_account.to_account_info(),
-            ctx.accounts.child_owner.to_account_info(),
-            ctx.accounts.wrapped_mint.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_2022_program.to_account_info(),
-        ],
-    )?;
+    // The child's wrapped-token account is created by Anchor's `init` + `token::*`
+    // constraints above, before this handler runs.
 
     // Mint child_cap fresh wrapped units to it — attenuation is a mint, not a transfer
     // of the parent's existing balance (BUILD_PLAN.md §5 D3).
