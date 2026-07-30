@@ -263,14 +263,33 @@ pub fn create_ata_ix(
     )
 }
 
-pub fn capability_pda(owner: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"capability", owner.as_ref()], &PROGRAM_ID).0
+/// A capability's own wrapped-token account: `[TOKEN_ACCOUNT_SEED, owner, nonce]`. The
+/// nonce is what lets one owner hold several capabilities (docs/ROADMAP.md 0.3).
+pub fn token_account_pda(owner: &Pubkey, nonce: u64) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"capability-token", owner.as_ref(), &nonce.to_le_bytes()],
+        &PROGRAM_ID,
+    )
+    .0
+}
+
+/// Keyed on the capability's *token account*, not its owner — the same one fixed formula
+/// leash-hook re-derives at transfer time from base account 0.
+pub fn capability_pda(token_account: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"capability", token_account.as_ref()], &PROGRAM_ID).0
+}
+
+/// Convenience for the common "give me both PDAs for (owner, nonce)" case.
+pub fn capability_for(owner: &Pubkey, nonce: u64) -> (Pubkey, Pubkey) {
+    let token_account = token_account_pda(owner, nonce);
+    (capability_pda(&token_account), token_account)
 }
 
 pub fn issue(
     svm: &mut LiteSVM,
     s: &Setup,
     principal: &Keypair,
+    nonce: u64,
     cap: u64,
     expiry: i64,
     allowlist: Vec<Pubkey>,
@@ -291,8 +310,7 @@ pub fn issue(
     .unwrap();
     send(svm, &s.payer, &[&s.usdc_mint_authority], &[mint_usdc_ix]).unwrap();
 
-    let capability = capability_pda(&principal.pubkey());
-    let capability_token_account = ata(&principal.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let (capability, capability_token_account) = capability_for(&principal.pubkey(), nonce);
 
     let ix = anchor_lang::solana_program::instruction::Instruction {
         program_id: PROGRAM_ID,
@@ -302,34 +320,34 @@ pub fn issue(
             vault: s.vault,
             wrapped_mint: s.wrapped_mint,
             program_authority: s.program_authority,
-            capability,
             capability_token_account,
+            capability,
             token_program: spl_token::id(),
             token_2022_program: spl_token_2022::id(),
-            associated_token_program: anchor_spl::associated_token::ID,
             system_program: anchor_lang::solana_program::system_program::ID,
         }
         .to_account_metas(None),
-        data: leash_program::instruction::Issue { cap, expiry, allowlist }.data(),
+        data: leash_program::instruction::Issue { nonce, cap, expiry, allowlist }.data(),
     };
     send(svm, &s.payer, &[principal], &[ix])
 }
 
 /// `owner` attenuates `parent_capability` (owned by `owner`) into a new child capability
 /// held by `child_owner`. Creates the child's ATA and Capability PDA as part of the call.
+#[allow(clippy::too_many_arguments)]
 pub fn attenuate(
     svm: &mut LiteSVM,
     s: &Setup,
     owner: &Keypair,
     parent_capability: Pubkey,
     child_owner: &Keypair,
+    nonce: u64,
     child_cap: u64,
     child_expiry: i64,
     child_allowlist: Vec<Pubkey>,
 ) -> Result<(), String> {
     svm.airdrop(&child_owner.pubkey(), 1_000_000_000).unwrap();
-    let child_capability = capability_pda(&child_owner.pubkey());
-    let child_ata = ata(&child_owner.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let (child_capability, child_token_account) = capability_for(&child_owner.pubkey(), nonce);
 
     let ix = anchor_lang::solana_program::instruction::Instruction {
         program_id: PROGRAM_ID,
@@ -337,16 +355,16 @@ pub fn attenuate(
             owner: owner.pubkey(),
             parent_capability,
             child_owner: child_owner.pubkey(),
-            child_capability,
             wrapped_mint: s.wrapped_mint,
             program_authority: s.program_authority,
-            child_token_account: child_ata,
+            child_token_account,
+            child_capability,
             token_2022_program: spl_token_2022::id(),
-            associated_token_program: anchor_spl::associated_token::ID,
             system_program: anchor_lang::solana_program::system_program::ID,
         }
         .to_account_metas(None),
         data: leash_program::instruction::Attenuate {
+            nonce,
             child_cap,
             child_expiry,
             child_allowlist,
@@ -381,10 +399,12 @@ pub fn redeem(
         program_id: PROGRAM_ID,
         accounts: leash_program::accounts::Redeem {
             holder: holder.pubkey(),
-            // Always passed, existent or not — see redeem.rs's doc comment on why this
-            // can't be optional without reopening docs/ROADMAP.md 0.1.
-            capability: capability_pda(&holder.pubkey()),
             holder_wrapped_account,
+            // Always passed, existent or not — see redeem.rs's doc comment on why this
+            // can't be optional without reopening docs/ROADMAP.md 0.1. Derived from the
+            // token account, so a merchant's ATA simply yields an address with nothing
+            // at it.
+            capability: capability_pda(&holder_wrapped_account),
             wrapped_mint: s.wrapped_mint,
             vault: s.vault,
             program_authority: s.program_authority,
@@ -398,14 +418,18 @@ pub fn redeem(
     send(svm, &s.payer, &[holder], &[ix])
 }
 
+/// `source` is the capability's own token account — an owner may hold several now
+/// (docs/ROADMAP.md 0.3), so it can no longer be derived from the owner alone. Use
+/// `token_account_pda(owner, nonce)` or the second element of `capability_for`.
 pub fn spend(
     svm: &mut LiteSVM,
     s: &Setup,
     source_owner: &Keypair,
+    source: &Pubkey,
     destination: &Pubkey,
     amount: u64,
 ) -> Result<(), String> {
-    let source_ata = ata(&source_owner.pubkey(), &s.wrapped_mint, &spl_token_2022::id());
+    let source_ata = *source;
     let mut transfer_ix = spl_token_2022::instruction::transfer_checked(
         &spl_token_2022::id(),
         &source_ata,
