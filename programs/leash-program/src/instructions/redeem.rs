@@ -39,26 +39,29 @@ use crate::state::Capability;
 pub struct Redeem<'info> {
     pub holder: Signer<'info>,
 
-    /// CHECK: the holder's Capability PDA, address-verified by the seeds constraint. May
-    /// legitimately not exist (a merchant who holds received units and no capability) —
-    /// the handler distinguishes the two by inspecting owner/data rather than trusting
-    /// the caller, so this cannot be typed as `Account<Capability>` or `Option<_>`.
-    /// Mutable because a root's redemption writes `cap` back down.
+    /// CHECK: holder's Token-2022 account holding wrapped units — burned from here.
+    /// Declared before `capability`, whose seeds derive from it.
+    #[account(mut)]
+    pub holder_wrapped_account: UncheckedAccount<'info>,
+
+    /// CHECK: the Capability belonging to `holder_wrapped_account`, address-verified by
+    /// the seeds constraint. May legitimately not exist (a merchant holding received
+    /// units) — the handler distinguishes the two by inspecting owner/data rather than
+    /// trusting the caller, so this cannot be typed as `Account<Capability>` or
+    /// `Option<_>`. Mutable because a root's redemption writes `cap` back down.
     ///
-    /// NOTE: this derivation assumes one capability per owner. When docs/ROADMAP.md 0.3
-    /// lands, capabilities are keyed off their own token account instead, and this
-    /// should derive from `holder_wrapped_account` — at which point the association
-    /// becomes exact rather than "the capability this holder happens to have."
+    /// Derived from the token account rather than the holder (docs/ROADMAP.md 0.3), which
+    /// makes the association exact: if a capability exists at this address then this
+    /// account *is* its token account, so the "is this unspent budget?" question is
+    /// answered by the derivation itself. Under the old owner-keyed scheme it could only
+    /// be answered as "the one capability this holder happens to have," which stops being
+    /// good enough the moment an owner can hold several.
     #[account(
         mut,
-        seeds = [CAPABILITY_SEED.as_bytes(), holder.key().as_ref()],
+        seeds = [CAPABILITY_SEED.as_bytes(), holder_wrapped_account.key().as_ref()],
         bump,
     )]
     pub capability: UncheckedAccount<'info>,
-
-    /// CHECK: holder's Token-2022 account holding wrapped units — burned from here.
-    #[account(mut)]
-    pub holder_wrapped_account: UncheckedAccount<'info>,
 
     /// CHECK: leash-wrapped-USD mint. Mutable because burning reduces supply.
     #[account(mut)]
@@ -87,52 +90,54 @@ pub fn redeem_handler(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     // 0. Authorize the redemption itself (docs/ROADMAP.md 0.1). See the struct doc above
     // for the rule; this is where it is enforced.
     //
-    // A capability exists only if leash-program owns the account and it holds data —
-    // nobody else can create an account at this PDA, since producing its signature
-    // requires this program. An empty/system-owned account at the derived address means
-    // "this holder has no capability," which is checked here rather than asserted by the
-    // caller.
+    // The account at this address is a capability only if leash-program owns it and it
+    // holds data — nobody else can create one there, since producing that PDA's signature
+    // requires this program. An empty/system-owned account means "these units are not
+    // some capability's unspent budget," which is checked here rather than asserted by
+    // the caller. That is the merchant case, and it stays unrestricted.
     let capability_info = ctx.accounts.capability.to_account_info();
-    let holder_has_capability =
+    let is_capability_budget =
         capability_info.owner == &crate::ID && !capability_info.data_is_empty();
 
-    if holder_has_capability {
+    if is_capability_budget {
         let mut capability: Capability = {
             let data = capability_info.try_borrow_data()?;
             Capability::try_deserialize(&mut &data[..])?
         };
 
-        // Only units sitting in the capability's *own* token account are unspent budget.
-        // Anything else this holder controls arrived through a hook-checked transfer and
-        // is theirs to cash out like any merchant's.
-        if ctx.accounts.holder_wrapped_account.key() == capability.token_account {
-            // A delegatee never funded the vault, so it has no claim on it. It can still
-            // spend through the hook — that path is untouched.
-            require!(capability.depth == 0, LeashError::DelegatedCannotRedeem);
+        // Derivation already ties this capability to `holder_wrapped_account`; re-checking
+        // the stored field costs nothing and catches it being written wrong at issue time
+        // (the same reasoning as leash-hook's check — docs/ROADMAP.md 0.4).
+        require!(
+            ctx.accounts.holder_wrapped_account.key() == capability.token_account,
+            LeashError::Unauthorized
+        );
 
-            // A root may unwind only what it hasn't already spent or promised away.
-            // Without the `committed_to_children` term, a parent could drain the vault
-            // and strand the units minted against it for its children — the same
-            // collateral shortfall as docs/ROADMAP.md 0.2, reached through redemption
-            // instead of spending.
-            let free = capability
-                .cap
-                .checked_sub(capability.spent)
-                .and_then(|v| v.checked_sub(capability.committed_to_children))
-                .ok_or(LeashError::CapExceeded)?;
-            require!(amount <= free, LeashError::CapExceeded);
+        // A delegatee never funded the vault, so it has no claim on it. It can still
+        // spend through the hook — that path is untouched.
+        require!(capability.depth == 0, LeashError::DelegatedCannotRedeem);
 
-            // Shrink the budget to match the collateral actually left behind. Skipping
-            // this would leave the capability advertising spending power the vault no
-            // longer backs (docs/ROADMAP.md 0.7).
-            capability.cap = capability
-                .cap
-                .checked_sub(amount)
-                .ok_or(LeashError::CapExceeded)?;
+        // A root may unwind only what it hasn't already spent or promised away. Without
+        // the `committed_to_children` term, a parent could drain the vault and strand the
+        // units minted against it for its children — the same collateral shortfall as
+        // docs/ROADMAP.md 0.2, reached through redemption instead of spending.
+        let free = capability
+            .cap
+            .checked_sub(capability.spent)
+            .and_then(|v| v.checked_sub(capability.committed_to_children))
+            .ok_or(LeashError::CapExceeded)?;
+        require!(amount <= free, LeashError::CapExceeded);
 
-            let mut data = capability_info.try_borrow_mut_data()?;
-            capability.try_serialize(&mut &mut data[..])?;
-        }
+        // Shrink the budget to match the collateral actually left behind. Skipping this
+        // would leave the capability advertising spending power the vault no longer backs
+        // (docs/ROADMAP.md 0.7).
+        capability.cap = capability
+            .cap
+            .checked_sub(amount)
+            .ok_or(LeashError::CapExceeded)?;
+
+        let mut data = capability_info.try_borrow_mut_data()?;
+        capability.try_serialize(&mut &mut data[..])?;
     }
 
     // 1. Burn `amount` wrapped units from the holder's account. The holder signs this
