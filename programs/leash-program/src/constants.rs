@@ -1,7 +1,27 @@
 use anchor_lang::prelude::*;
 
+/// A Capability PDA is `[CAPABILITY_SEED, its own token account]` — *not* keyed on the
+/// owner. Keying on the owner is what limited each owner to a single capability forever
+/// (docs/ROADMAP.md 0.3): a second `issue` collided with the first PDA. The nonce that
+/// makes several capabilities possible lives in the token account's seeds below, and the
+/// capability inherits the distinction by being derived from that address.
+///
+/// This indirection is not stylistic. leash-hook must re-derive "the Capability for this
+/// transfer" from **one fixed seed formula**, registered into the mint's
+/// `ExtraAccountMetaList` at deployment and resolvable only from accounts the transfer
+/// already carries — it cannot be handed a client-chosen nonce. The source token account
+/// *is* one of those accounts (base account 0), so folding the nonce into its address
+/// puts the disambiguator somewhere the hook can already reach.
 #[constant]
 pub const CAPABILITY_SEED: &str = "capability";
+
+/// Seeds a capability's own wrapped-token account: `[TOKEN_ACCOUNT_SEED, owner, nonce]`,
+/// nonce as little-endian `u64`. One per capability, rather than the single ATA per
+/// (owner, mint) this used to rely on — an ATA is unique per owner, so it could not
+/// represent more than one capability. See CAPABILITY_SEED above for why the nonce goes
+/// here and not on the capability itself.
+#[constant]
+pub const TOKEN_ACCOUNT_SEED: &str = "capability-token";
 
 #[constant]
 pub const VAULT_SEED: &str = "vault";
