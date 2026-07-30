@@ -57,6 +57,20 @@ pub mod leash_program {
         instructions::revoke::revoke_handler(ctx)
     }
 
+    /// Revoke a capability below you in the tree. Authority is proved by the target's own
+    /// `ancestors` array — the same one leash-hook already gates spends on. See
+    /// docs/ROADMAP.md 0.8.
+    pub fn revoke_descendant(ctx: Context<RevokeDescendant>) -> Result<()> {
+        instructions::revoke_descendant::revoke_descendant_handler(ctx)
+    }
+
+    /// Release budget reserved for a child that can no longer spend it, so the parent can
+    /// use or redeem it again. Accounting only — see reclaim.rs for why the child's units
+    /// cannot be burned. docs/ROADMAP.md 0.7.
+    pub fn reclaim(ctx: Context<Reclaim>) -> Result<()> {
+        instructions::reclaim::reclaim_handler(ctx)
+    }
+
     pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
         instructions::redeem::redeem_handler(ctx, amount)
     }

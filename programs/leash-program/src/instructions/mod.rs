@@ -1,6 +1,8 @@
 pub mod issue;
 pub mod attenuate;
 pub mod revoke;
+pub mod revoke_descendant;
+pub mod reclaim;
 pub mod redeem;
 pub mod record_spend;
 
@@ -11,5 +13,7 @@ pub mod record_spend;
 pub use issue::*;
 pub use attenuate::*;
 pub use revoke::*;
+pub use revoke_descendant::*;
+pub use reclaim::*;
 pub use redeem::*;
 pub use record_spend::*;

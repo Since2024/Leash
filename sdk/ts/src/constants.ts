@@ -4,6 +4,7 @@
 // TypeScript in this MVP; if one side changes, the other has to change by hand.
 
 export const CAPABILITY_SEED = Buffer.from("capability");
+export const TOKEN_ACCOUNT_SEED = Buffer.from("capability-token");
 export const AUTHORITY_SEED = Buffer.from("authority");
 export const HOOK_AUTHORITY_SEED = Buffer.from("hook-authority");
 export const EXTRA_ACCOUNT_METAS_SEED = Buffer.from("extra-account-metas");

@@ -1,13 +1,12 @@
 import { BN } from "@coral-xyz/anchor";
 import {
-  ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import type { Deployment } from "./deployment";
-import { capabilityPda, programAuthorityPda } from "./pda";
+import { capabilityFor, programAuthorityPda, randomNonce } from "./pda";
 import type { LeashPrograms } from "./programs";
 
 export interface IssueParams {
@@ -19,11 +18,17 @@ export interface IssueParams {
   expiresAt: number;
   /** Wrapped-mint token accounts this capability may pay. */
   allow: PublicKey[];
+  /** Distinguishes this capability from others the same principal holds. Random if
+   * omitted; reusing one that is already taken fails on-chain rather than overwriting. */
+  nonce?: bigint;
 }
 
 export interface IssueResult {
   capability: PublicKey;
   capabilityTokenAccount: PublicKey;
+  /** The nonce actually used — worth keeping, since it is what re-derives the
+   * capability's addresses later (docs/ROADMAP.md 0.6 tracks discovery without it). */
+  nonce: bigint;
   signature: string;
 }
 
@@ -39,6 +44,7 @@ export async function mint(
 ): Promise<IssueResult> {
   const { principal, deployment, budget, expiresAt, allow } = params;
   const { leashProgram, leashProgramId } = programs;
+  const nonce = params.nonce ?? randomNonce();
 
   const principalDepositAccount = getAssociatedTokenAddressSync(
     deployment.depositAssetMint,
@@ -46,31 +52,36 @@ export async function mint(
     false,
     TOKEN_PROGRAM_ID,
   );
-  const capability = capabilityPda(principal.publicKey, leashProgramId);
-  const capabilityTokenAccount = getAssociatedTokenAddressSync(
-    deployment.wrappedMint,
+  // The capability's token account is a program-derived account created by `issue`
+  // itself, not an ATA — an ATA is unique per (owner, mint) and so could only ever back
+  // one capability (docs/ROADMAP.md 0.3).
+  const { capability, tokenAccount: capabilityTokenAccount } = capabilityFor(
     principal.publicKey,
-    false,
-    TOKEN_2022_PROGRAM_ID,
+    nonce,
+    leashProgramId,
   );
 
   const signature = await leashProgram.methods
-    .issue(new BN(budget.toString()), new BN(expiresAt), allow)
+    .issue(
+      new BN(nonce.toString()),
+      new BN(budget.toString()),
+      new BN(expiresAt),
+      allow,
+    )
     .accounts({
       principal: principal.publicKey,
       principalDepositAccount,
       vault: deployment.vault,
       wrappedMint: deployment.wrappedMint,
       programAuthority: programAuthorityPda(leashProgramId),
-      capability,
       capabilityTokenAccount,
+      capability,
       tokenProgram: TOKEN_PROGRAM_ID,
       token2022Program: TOKEN_2022_PROGRAM_ID,
-      associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
     } as never)
     .signers([principal])
     .rpc();
 
-  return { capability, capabilityTokenAccount, signature };
+  return { capability, capabilityTokenAccount, nonce, signature };
 }

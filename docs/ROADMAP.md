@@ -38,6 +38,24 @@ lose depositor funds, and both reachable without any unusual behaviour. Both (0.
 are now fixed, each covered by tests verified to fail without their fix. The remaining
 Phase 0 items are real but none of them lose money on their own.
 
+0.3 and 0.4 are now fixed too, together: capabilities are keyed on their own token
+account rather than their owner, so one owner can hold many, and the hook checks the
+binding it previously only recorded. Both are covered by `multi_capability.rs`, verified
+to fail without the fix, and proven end-to-end against a real validator. Two consequences
+worth carrying forward: the **devnet deployment is now stale** — the instruction ABI
+changed and it has not been redeployed — and 0.6 (no way to enumerate an owner's
+capabilities) went from theoretical to live, and is now fixed too, via a
+`getProgramAccounts` helper and a `leash list` command. 0.8 is new, surfaced by 0.3: a
+parent cannot revoke one delegation without cutting off all of them.
+
+**Phase 0 now stands at 0.1 through 0.8 done.** 0.7 and 0.8 landed together as
+`reclaim` + `revoke_descendant`, which is what finally makes "cut this agent off and take
+the money back" expressible — the loop the pitch in `leash.txt` describes and the code
+could not previously perform. Remaining: 0.9 (allowlist ergonomics, a product decision
+more than a correctness gap) and 0.10, which 0.7 introduced knowingly — dead children's
+units can't be burned, so wrapped supply overstates redeemable value even though the vault
+covers everything that can actually move.
+
 ---
 
 ## Phase 0 — Correctness gaps that block mainnet
@@ -187,14 +205,14 @@ be reachable by cashing out instead of spending.
 
 ### 0.3 One owner can only ever hold one capability
 
-- [~] **Designed, not landed.** Root capabilities are derived at `[CAPABILITY_SEED,
-      principal]` (`issue.rs:46`, which still carries its literal `// TODO: real seed
-      scheme (nonce for multiple root caps per principal)`) and children identically at
-      `[CAPABILITY_SEED, child_owner]` (`attenuate.rs:42`). With no nonce, one owner
-      pubkey can hold at most one capability, ever — a second `issue` or `attenuate` for
-      the same owner collides with the first PDA and fails inside Anchor's `init` with an
-      opaque account-already-exists error. A silent trap for the first real user who
-      mints twice.
+- [x] **Fixed.** Root capabilities were derived at `[CAPABILITY_SEED, principal]`
+      (`issue.rs:46`, which carried a literal `// TODO: real seed scheme (nonce for
+      multiple root caps per principal)`) and children identically at `[CAPABILITY_SEED,
+      child_owner]` (`attenuate.rs:42`). With no nonce, one owner pubkey could hold at
+      most one capability, ever — a second `issue` or `attenuate` for the same owner
+      collided with the first PDA and failed inside Anchor's `init` with an opaque
+      account-already-exists error. A silent trap for the first real user who minted
+      twice.
 
 This is not a one-line fix, and the reason is worth preserving. `leash-hook` re-derives
 "the Capability for this transfer" from a **single** seed formula, registered once into
@@ -205,32 +223,55 @@ out-of-band. Two different derivation schemes for root vs. child capabilities ca
 be that one formula — which is exactly why `attenuate.rs:29-37` documents
 one-capability-per-owner as a deliberate consequence rather than an oversight.
 
-Intended approach: give every capability its own dedicated wrapped-token account seeded
-`[TOKEN_ACCOUNT_SEED, owner, nonce]`, and key the Capability PDA off *that account's
-address*. The hook's formula is then unchanged in mechanism — it points at base account 0
-(the transfer's source token account) instead of base account 3, because the nonce is
-already folded into that address and the interface supplies it on every transfer. The SDK
-generates a random `u64` nonce unless one is passed; the CLI exposes `--nonce`. Because
-an owner is no longer a unique key, `spend`/`revoke`/`watch`/`attenuate` must take an
-explicit `--capability`.
+**The fix, as landed.** Every capability gets its own dedicated wrapped-token account
+seeded `[TOKEN_ACCOUNT_SEED, owner, nonce]`, and the Capability PDA is keyed off *that
+account's address*. The hook's formula is unchanged in mechanism — it points at base
+account 0 (the transfer's source token account) instead of base account 3, because the
+nonce is already folded into that address and the interface supplies it on every
+transfer. `issue`/`attenuate` take a `nonce: u64`; the SDK generates a random one unless
+passed and returns the one it used; the CLI exposes `--nonce` and prints it. Because an
+owner is no longer a unique key, `spend`/`revoke`/`watch`/`attenuate` now require an
+explicit `--capability` or `--nonce` and **refuse to guess** — defaulting to, say, nonce
+0 would silently act on the wrong capability for anyone holding several, which is the
+failure this change exists to prevent.
 
-**Why this is `[~]` and not `[x]`:** it was implemented on a branch called
-`fix/capability-seed-nonce` inside an ephemeral cloud sandbox that had no git remote
-configured, so it was never pushed. That sandbox also had no `anchor` or
-`cargo-build-sbf` and no network access to the toolchain, so **it never produced a `.so`
-and never ran a single test** — including the tests written to prove the fix. Its IDL was
-hand-patched rather than regenerated. The branch exists nowhere now: `main` is the only
-branch on `origin`. Verifiably absent from `main`: `TOKEN_ACCOUNT_SEED`,
-`multi_capability`, `expect_err_code`.
+The capability's token account is now created by Anchor's `init` + `token::*`
+constraints, replacing the hand-rolled CPI to the associated-token-account program in
+both `issue` and `attenuate`. It is program-derived, but `token::authority` remains the
+holder, so the bearer-object model of BUILD_PLAN.md §0 is intact: only the *address* is
+derived, not control.
 
-**This is a breaking on-chain change.** Instruction arguments and account lists both
-change, so the existing devnet deployment and any capabilities issued under the old
-scheme are incompatible. Redeploy, don't upgrade-in-place over live state.
+Covered by `programs/leash-program/tests/multi_capability.rs` (7 tests): two roots for
+one principal with independent budgets, spending one not debiting the other, independent
+caps, independent revocation, one parent delegating to the same agent twice, and units
+held outside a capability's own account not counting as its budget. **Verified to fail
+without the fix**: with the nonce dropped from the token-account seeds and the program
+rebuilt, the second `issue` dies with `Allocate: account ... already in use` — exactly
+the collision described above.
+
+Also **proven end-to-end against a real `solana-test-validator`** through the CLI, the
+same bar Week 5 set: `init` → two `mint`s for one owner → `spend` from the first →
+on-chain state showing the first charged 200 and the second untouched → `revoke` the
+first → its next `spend` fails with `Error Code: Revoked` thrown from inside leash-hook
+during Token-2022's own `TransferChecked`, while the second capability spends its full
+budget successfully in the same session.
+
+One toolchain trap worth recording: **`anchor build`'s `.so` does not run on this local
+validator** — it fails at 44 compute units with `Access violation in unknown section at
+address 0x4`, before any program logic. `anchor build` is still the right way to
+regenerate the IDL (hand-patching it is what made the previous attempt untrustworthy),
+but the binaries must come from `cargo-build-sbf`, and the validator must be restarted
+against those. Diagnosed by rebuilding and restarting, not guessed.
+
+**This was a breaking on-chain change.** Instruction arguments and account lists both
+changed, so the existing devnet deployment and any capabilities issued under the old
+scheme are incompatible. Redeploy, don't upgrade-in-place over live state — the devnet
+programs listed in CLAUDE.md predate this and have **not** been redeployed yet.
 
 ### 0.4 The capability ↔ token-account binding is nominal
 
-- [ ] **`Capability.token_account` is written and never read.** Found by reading the
-      code; not inherited from the build plan.
+- [x] **Fixed, alongside 0.3.** `Capability.token_account` was written and never read.
+      Found by reading the code; not inherited from the build plan.
 
 The field is set at `issue.rs:131` and `attenuate.rs:150`, declared in `state.rs`, and
 sized into `Capability::MAX_SIZE` — and read by nothing. Not the hook, not
@@ -247,53 +288,114 @@ finish it: the hook must **additionally** check `source == capability.token_acco
 Without that check, the derivation proves the account is *a* capability's token account,
 not that it is *this* transfer's.
 
+**As landed:** that check is now in `leash-hook`'s `spend_logic`
+(`LeashHookError::WrongTokenAccount`), and the equivalent one in `redeem`
+(`LeashError::Unauthorized`). Both are belt-and-braces rather than load-bearing —
+address derivation already ties the capability to the source account — so they guard
+against the field being written wrong at issue time, not against a forged account. They
+are cheap, and a field that is written twice and read by nothing is exactly the sort of
+thing that quietly stops being true. `multi_capability.rs` asserts the field matches the
+account each capability was actually issued against, and covers the case where an owner
+holds capability budget *and* separately-received units: the received units are not
+spendable as capability budget.
+
 ### 0.5 Cap enforcement isn't isolated from balance enforcement — and the tests can't tell either
 
-- [ ] A spend over the cap is currently indistinguishable from Token-2022's own
+- [x] **Fixed.** A spend over the cap used to be indistinguishable from Token-2022's own
       insufficient-balance rejection, because a capability's token balance always equals
       its remaining cap — `issue` mints exactly `cap`, once, and nothing ever adds to it.
       Documented honestly in `week3_spend_enforcement.rs`, `tests/invariants/README.md`,
       and `BUILD_PLAN.md:340`; the Week 6 devnet run shows the same ambiguity in the wild
       as `custom program error: 0x1` (`BUILD_PLAN.md:481`).
 
-      So the existing over-cap test proves "spending more than was issued fails," not
-      specifically "leash-hook's `amount + spent > cap` check works."
+      So the over-cap test proved "spending more than was issued fails," not specifically
+      "leash-hook's `amount + spent > cap` check works."
 
-- [~] **The test suite could not distinguish them even if the balances differed.**
-      `expect_err` asserts `is_err()` and then *prints* the error to stderr — it never
-      inspects it. `expect_err_code` now exists alongside it (`tests/common/mod.rs`) and
-      is used throughout `conservation_invariant.rs`, but the three original test files
-      still use the weaker helper, so their rejections remain unverified as to cause.
-      Converting them is the remaining work here.
+      **The premise that made this look hard was wrong** — see the correction under the
+      second bullet. Isolating the two needs a capability whose *balance exceeds its
+      spendable budget*, and `attenuate` produces exactly that: it mints the child's units
+      fresh rather than moving the parent's, so a parent that delegates 200 of its 500
+      still holds all 500 while only 300 remains spendable. 301 is then comfortably inside
+      the token balance — Token-2022 cannot be the one rejecting — so a `CapExceeded` there
+      can only have come from leash-hook's own arithmetic.
 
-      This means **CLAUDE.md and BUILD_PLAN.md overstate the committed tests** where they
-      claim every rejection is verified by its actual on-chain error code. That practice
-      did happen during development — it is how the Week 3 `AlreadyProcessed`
-      false-positives were caught — but it was never encoded as an assertion. Both
-      documents should be corrected.
+      `week3_spend_enforcement.rs` now asserts exactly that, on the `principal3` chain it
+      was already building for the ancestor test. The old ambiguous 901 case is kept but
+      relabelled and asserted as `E_TOKEN_INSUFFICIENT_FUNDS` (Token-2022's own error 1),
+      so the suite now names *which layer* rejected instead of blurring them together.
 
-      `expect_err_code` asserts the specific `LeashError` / `LeashHookError` variant
-      (hook variants: `Revoked` 6000, `ParentRevoked` 6001, `Expired` 6002,
-      `NotAllowlisted` 6003, `CapExceeded` 6004). It was added as a prerequisite for
-      0.2's test, since without it that test would have passed for the wrong reason.
+- [x] **Fixed.** `expect_err` asserts `is_err()` and then *prints* the error to stderr —
+      it never inspects it. `expect_err_code` was added alongside it
+      (`tests/common/mod.rs`) as a prerequisite for 0.2's test, since without it that test
+      would have passed for the wrong reason, but the three original `week*` files kept
+      using the weaker helper, so their rejections were unverified as to cause.
 
-      Fully isolating cap-from-balance additionally needs a scenario where balance exceeds
-      cap, which no current instruction produces. Note that 0.2's over-issuance was *not*
-      a usable source of one — it was a bug to fix, not a fixture to build on, and it is
-      now fixed.
+      All ten of those are now converted: `NotAllowlisted` (6003), `Revoked` (6000),
+      `ParentRevoked` (6001) for each of the three ancestor depths, `Expired` (6002),
+      `CapExceeded` (6000, leash-program's own) for over-delegation, `DepthExceeded`
+      (6004) past `MAX_DEPTH`, and Token-2022's `InsufficientFunds` (1) for the balance
+      case.
+
+      The conversion was worth doing for more than tidiness: all three ancestor tests turn
+      out to throw `ParentRevoked`, *not* `Revoked`, so the hook really does distinguish
+      "this capability is revoked" from "an ancestor is" — a distinction the old
+      `is_err()` assertions could not have caught either way. **The new assertions were
+      themselves verified to discriminate**: swapping one `ParentRevoked` for `Revoked`
+      makes the test fail with `expected ... Custom(6000), but got: Custom(6001)`, so they
+      are really reading the code and not merely matching any error.
+
+      Two `expect_err` calls remain, both in `multi_capability.rs` and both deliberate,
+      with the reason stated at the call site: one is a genuinely balance-bound rejection
+      (the isolated version of the same check lives in the test above it), and the other
+      fails during client-side extra-account resolution, where there is no on-chain error
+      code to assert at all.
+
+      This also retires a documented overstatement: **CLAUDE.md and BUILD_PLAN.md used to
+      claim every rejection was verified by its on-chain error code** when it was not
+      (corrected in commit f3f4eb9). That claim is now true of the committed tests.
+
+      ~~Fully isolating cap-from-balance additionally needs a scenario where balance
+      exceeds cap, which no current instruction produces.~~ **Wrong, and corrected above:**
+      `attenuate` produces exactly that scenario, because it mints the child's units
+      instead of moving the parent's. `conservation_invariant.rs` had been relying on this
+      since 0.2 without the connection being drawn back here. (The rest of the original
+      note stands: 0.2's over-issuance was a bug to fix, not a fixture to build on.)
 
 ### 0.6 No way to enumerate an owner's capabilities
 
-- [ ] Once one owner can hold many (0.3), there is no on-chain index. A caller who loses
-      a nonce cannot find the capability again except by scanning program accounts
-      filtered on the `owner` field.
+- [x] **Fixed (the cheap way, as planned).** Once one owner can hold many (0.3), there
+      was no on-chain index, and a caller who lost a nonce could not find the capability
+      again except by scanning program accounts filtered on the `owner` field.
 
-      Cheap fix: a `getProgramAccounts` helper in the SDK with a `memcmp` filter at the
-      `owner` offset (8, right after the discriminator — the layout is already fixed and
-      documented in `state.rs`). Expensive fix: a per-owner registry account, which
-      reintroduces a hot account and a write on every issue. Start with the former.
+      Landed as the cheap fix this entry called for: `findCapabilitiesByOwner` in
+      `sdk/ts/src/find.ts` uses `getProgramAccounts` with a `memcmp` filter at the `owner`
+      offset (8, right after the discriminator — verified against `state.rs`, not
+      assumed), plus a `leash list` CLI command. The expensive fix — a per-owner registry
+      account — stays unbuilt, since it reintroduces a hot account and a write on every
+      `issue`.
 
-      Blocked on 0.3; meaningless before it.
+      **What it deliberately does not do: recover a random nonce.** The nonce is hashed
+      into the token account's address, so it cannot be read back out; it is only
+      recoverable by deriving candidates and comparing. `--recover-nonce <limit>` does
+      exactly that and therefore only ever finds small sequential nonces — the `--nonce 0`,
+      `--nonce 1` pattern a human types — and essentially never one from the SDK's
+      `randomNonce()`. Both the SDK and the CLI say so rather than printing a blank
+      column: an unrecovered nonce prints `nonce=? (not in scanned range)`. Capabilities
+      themselves are always listed in full regardless, so nothing is hidden — only the
+      convenience of re-deriving addresses is lost.
+
+      So the durable answer is still to keep the nonce `mint`/`attenuate` return. This
+      makes a lost one survivable, not a non-issue.
+
+      Also worth knowing before depending on it: `getProgramAccounts` is a heavy RPC call
+      that scans every account the program owns, and many public endpoints rate-limit or
+      disable it. Fine for a CLI or a dashboard refresh; not for a hot path.
+
+      Verified against a real `solana-test-validator`: three capabilities for one owner
+      (nonces 0, 1, and a random one) were all found by scan; `--recover-nonce 16`
+      recovered 0 and 1 and correctly reported the random one as out of range; and a
+      nonce recovered from `list` was then used to `spend`, with the result showing up in
+      the next `list`.
 
 ### 0.7 Budget reserved for a child is never released back
 
@@ -305,19 +407,84 @@ not that it is *this* transfer's.
       redeem paths need no reconciliation: a merchant has no capability, and a delegated
       capability cannot redeem at all.
 
-- [ ] **Still open: nothing releases `committed_to_children`.** When a child is finished
-      with — revoked, expired, or simply done — the budget its parent reserved stays
-      reserved forever. The parent cannot spend it (0.2 enforces the reservation) and
-      cannot redeem it (0.1 bounds redemption by the same term), so the collateral is
-      stranded, correctly but permanently.
+- [x] **Fixed: `reclaim` releases `committed_to_children`.** When a child was finished
+      with — revoked, expired, or simply done — the budget its parent reserved stayed
+      reserved forever. The parent could not spend it (0.2 enforces the reservation) and
+      could not redeem it (0.1 bounds redemption by the same term), so the collateral was
+      stranded, correctly but permanently. That was the cost of both critical fixes being
+      conservative: they close the holes by refusing, and nothing un-refused.
 
-      This is the cost of both critical fixes being conservative: they close the holes by
-      refusing, and nothing yet un-refuses. Needs a `release`/`reclaim` instruction that
-      burns a revoked child's unspent units and decrements the parent's
-      `committed_to_children` by the same amount — the only way to do it without
-      reopening 0.2, since the two numbers have to move together.
+      **The specified fix was not implementable, and the reason is worth keeping.** This
+      entry called for an instruction that "burns a revoked child's unspent units and
+      decrements the parent's `committed_to_children` by the same amount." The burn cannot
+      be done: a capability's token account is `token::authority = <holder>` — the
+      bearer-object model of BUILD_PLAN.md §0 — so burning from it requires the *child's*
+      signature, and a child being reclaimed from has just been revoked by its parent.
+      Requiring its cooperation would make the instruction useless in exactly the case it
+      exists for, and making the program the authority would break the bearer model.
 
-### 0.8 Allowlist ergonomics and size
+      So `reclaim` (`instructions/reclaim.rs`) moves **accounting only**, and rests on the
+      child being provably unable to spend: `revoked` is one-way, `expiry` is fixed at
+      `attenuate` time and cannot be extended, leash-hook checks both on every spend, and
+      a delegated capability cannot `redeem` at all (0.1). A dead child's units are inert
+      by three independent paths, so releasing the reservation cannot let the tree spend
+      more than the vault backs — the invariant 0.2 protects. It releases `cap - spent`,
+      never the full delegation, since units the child already spent are genuinely gone.
+
+      Guards, each covered by a test: refuses while the child is live
+      (`ChildStillLive`); only the **immediate** parent may call it (`NotAChild`), because
+      `attenuate` records the reservation nowhere else; and it is idempotent, writing the
+      child's `cap` down to `spent` so a second call releases nothing rather than crediting
+      the parent twice. **The liveness guard was verified to be load-bearing**: disabling
+      it and rebuilding makes two tests fail.
+
+      Covered by `programs/leash-program/tests/reclaim_and_descendant_revoke.rs`, and
+      proven end-to-end on a real validator through the CLI: delegate 400, agent spends
+      150, `revoke-descendant`, `reclaim`, and the parent's spendable budget goes from 400
+      to 850 — with 851 rejected by the hook and the merchant's final balance exactly the
+      1_000 deposited.
+
+      **Known artifact, tracked as 0.10:** the dead child's unspent units are never
+      destroyed, so the wrapped mint's total supply overstates redeemable value.
+
+### 0.8 A parent cannot revoke a single delegation
+
+- [x] **Fixed: `revoke_descendant`.** `revoke` is `has_one = owner` (`revoke.rs:15`), so
+      only a capability's *own* owner could flip its `revoked` flag. A parent's only lever
+      over a child was revoking **itself**, which cascades to every descendant through the
+      hook's ancestor walk. Found while writing `multi_capability.rs`, whose first draft
+      assumed the parent could revoke one child and was rejected on-chain with
+      `Unauthorized` (6006); that test pins the old rule's rejection, and the new
+      instruction is what makes selective revocation possible.
+
+      Authority comes from the target's own `ancestors` array — the same array leash-hook
+      already reads on every spend — so this adds no new state and no new trust: if a
+      capability's spends are already gated on these ancestors being unrevoked, those same
+      ancestors are exactly the set entitled to revoke it. **Any** ancestor may, not just
+      the immediate parent, because a grandparent could already stop those spends by
+      revoking itself; letting it revoke the descendant directly is strictly less
+      destructive than the lever it already had.
+
+      Kept as a separate instruction rather than a branch inside `revoke`: the authority
+      check is genuinely different (`has_one` versus an ancestry proof), and the common
+      self-revoke path shouldn't pay for a check it never needs.
+
+      Note the split from 0.7, which is deliberate and tested: any ancestor may *revoke*,
+      but only the immediate parent may *reclaim*, since the reservation exists only
+      there.
+
+      Why it mattered: this was invisible while an owner could hold only one capability.
+      Once a parent can delegate to the same agent several times (0.3), "withdraw *this*
+      allowance and leave the others alone" is a natural thing to want, and it was not
+      expressible — the parent had to cut off everything downstream or nothing. It also
+      read oddly against the pitch in `leash.txt`, where revocation is sold as the
+      principal's power to cut an agent off, while in fact the agent could revoke its own
+      capability and the principal could not revoke just that one.
+
+      Landed together with 0.7, as this entry predicted they should be: revoking a child
+      is exactly when its reserved budget should become reclaimable.
+
+### 0.9 Allowlist ergonomics and size
 
 - [ ] Allowlist entries are **destination token accounts**, not merchant identities — the
       hook compares `destination.key` directly against the `Vec<Pubkey>`. That means a
@@ -328,6 +495,32 @@ not that it is *this* transfer's.
       account. Merkle-proof allowlists are the known answer (BUILD_PLAN.md §12) and are
       not needed until 10 is the binding constraint — but 10 is low enough that it may
       bind sooner than expected.
+
+### 0.10 Wrapped supply overstates redeemable value
+
+- [ ] **Introduced deliberately by 0.7**, and the reason it is acceptable is written up
+      there: `reclaim` cannot burn a dead child's unspent units, because the token
+      account's authority is the child (the bearer model), not this program. Those units
+      are inert — a revoked or expired capability cannot spend, and a delegated one cannot
+      redeem — but they still count toward the wrapped mint's `supply`.
+
+      Nothing on-chain reads total supply, so nothing currently breaks. The risk is
+      **interpretive**: anyone auditing solvency by comparing wrapped supply against the
+      vault balance will see a shortfall that is not real, and the gap grows with every
+      delegation that ends without being fully spent. That is a bad property for a system
+      whose whole pitch is that the token enforces the limit.
+
+      Note this is distinct from 0.2's over-issuance, which was a genuine solvency hole.
+      Here the vault is fully sufficient for every unit that can actually move; only the
+      headline number is wrong.
+
+      Options, none obviously right yet: have `attenuate` make the program a delegate on
+      the child's token account at creation time so `reclaim` can burn without the child
+      signing (needs checking against the bearer model — a delegate is not an owner, so
+      this may be compatible); or expose a "redeemable supply" figure that subtracts dead
+      capabilities' balances, and be explicit that raw `supply` is not the solvency
+      metric. Prefer the former if it holds up, since a number nobody has to know to
+      interpret is worth more than a caveat.
 
 ---
 

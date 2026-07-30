@@ -325,6 +325,12 @@ Three design points this week surfaced, none of which were obvious from D1-D4:
   derivation schemes for root vs. child capabilities can't both be that one
   formula. Consequence, documented rather than hidden: one owner can hold at
   most one active capability (root or child) at a time.
+  <br>**[Superseded — see docs/ROADMAP.md 0.3.]** The single-formula constraint
+  still holds and is still the reason root and child must share a scheme, but
+  the formula is no longer keyed on the owner: it is `[CAPABILITY_SEED, <the
+  capability's own token account>]`, resolved by the hook from base account 0
+  instead of base account 3. The one-capability-per-owner consequence recorded
+  above is therefore no longer true of the current code.
 - **leash-hook cannot write `spent` itself.** Capability accounts are owned
   by leash-program; Solana only lets the owning program mutate an account's
   data. leash-hook validates everything (cap/expiry/allowlist/revoked/parent)

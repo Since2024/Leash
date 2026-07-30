@@ -26,15 +26,15 @@ export type LeashHook = {
         "derived dynamically per-transfer instead of Week 1's fixed placeholder.",
         "",
         "Every Capability (root from `issue`, or child from `attenuate`) is seeded as",
-        "`[CAPABILITY_SEED, owner]` — one fixed formula regardless of root/child status,",
-        "which is exactly what makes deriving it here possible (see attenuate.rs's doc",
-        "comment on why the child seed scheme had to change to match).",
+        "`[CAPABILITY_SEED, <its own token account>]` — one fixed formula regardless of",
+        "root/child status, which is exactly what makes deriving it here possible (see",
+        "attenuate.rs's doc comment on why both schemes must match).",
         "",
         "Extra accounts registered, in order (indices 5-10, after the 5 base accounts):",
         "5. leash_program's own ID — needed as the \"owning program\" anchor for the PDA",
         "derivation below (Capability accounts belong to leash-program, not this",
         "hook), and reused as the CPI target account in `spend_logic`.",
-        "6. source_capability — external PDA, `[CAPABILITY_SEED, owner]` under",
+        "6. source_capability — external PDA, `[CAPABILITY_SEED, source_token_account]` under",
         "leash-program. Writable: `record_spend` (via CPI) mutates it.",
         "7-9. ancestor1 / ancestor2 / ancestor3 — each read directly out of",
         "**source_capability's own** `ancestors` array (`ANCESTORS_FIELD_OFFSET`),",
@@ -143,6 +143,11 @@ export type LeashHook = {
       "code": 6004,
       "name": "capExceeded",
       "msg": "spend would exceed this capability's remaining budget"
+    },
+    {
+      "code": 6005,
+      "name": "wrongTokenAccount",
+      "msg": "source account is not this capability's token account"
     }
   ]
 };

@@ -15,7 +15,12 @@ export interface CapabilitySnapshot {
   depth: number;
 }
 
-function decode(programs: LeashPrograms, data: Buffer): CapabilitySnapshot {
+/** Exported so `find.ts` can reuse it: the account-name quirk below is worth stating
+ * once, not rediscovering per call site. */
+export function decodeCapability(
+  programs: LeashPrograms,
+  data: Buffer,
+): CapabilitySnapshot {
   // Anchor's `Program` constructor lowercases the first letter of account names for
   // its JS/TS coder ("Capability" in the Rust struct and raw IDL becomes "capability"
   // here) — confirmed by hitting "Account not found: Capability" against a real
@@ -48,7 +53,7 @@ export function watch(
   return programs.connection.onAccountChange(
     capability,
     (accountInfo) => {
-      onChange(decode(programs, accountInfo.data));
+      onChange(decodeCapability(programs, accountInfo.data));
     },
     { commitment: "confirmed" },
   );
@@ -63,5 +68,5 @@ export async function fetchCapability(
   if (!accountInfo) {
     throw new Error(`Capability account not found: ${capability.toBase58()}`);
   }
-  return decode(programs, accountInfo.data);
+  return decodeCapability(programs, accountInfo.data);
 }

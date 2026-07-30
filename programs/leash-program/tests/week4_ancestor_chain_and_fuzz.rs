@@ -85,9 +85,10 @@ fn depth3_spend_fails_when_immediate_parent_revoked() {
     let chain = build_depth3_chain(&mut svm, &s, merchant_ata);
     // B is C's immediate parent (ancestors[0]).
     revoke(&mut svm, &s, &chain.b_owner, chain.b_capability).unwrap();
-    expect_err(
+    expect_err_code(
         spend(&mut svm, &s, &chain.c_owner, &chain.c_token_account, &merchant_ata, 10),
         "depth-3 spend after immediate parent (B) revoked",
+        E_HOOK_PARENT_REVOKED,
     );
 }
 
@@ -104,9 +105,10 @@ fn depth3_spend_fails_when_grandparent_revoked() {
     // isolates that the *second* ancestor slot is actually being checked, not just the
     // first.
     revoke(&mut svm, &s, &chain.a_owner, chain.a_capability).unwrap();
-    expect_err(
+    expect_err_code(
         spend(&mut svm, &s, &chain.c_owner, &chain.c_token_account, &merchant_ata, 10),
         "depth-3 spend after grandparent (A) revoked",
+        E_HOOK_PARENT_REVOKED,
     );
 }
 
@@ -123,9 +125,10 @@ fn depth3_spend_fails_when_root_revoked() {
     // A and B (the two closer ancestors) stay live, isolating that the *third* slot is
     // genuinely checked, not just the first two.
     revoke(&mut svm, &s, &chain.root_owner, chain.root_capability).unwrap();
-    expect_err(
+    expect_err_code(
         spend(&mut svm, &s, &chain.c_owner, &chain.c_token_account, &merchant_ata, 10),
         "depth-3 spend after root (great-grandparent) revoked",
+        E_HOOK_PARENT_REVOKED,
     );
 }
 
@@ -148,9 +151,10 @@ fn attenuate_rejects_child_cap_exceeding_parent_remaining() {
 
     // One unit over the now-fully-committed parent: fails.
     let child_over_owner = Keypair::new();
-    expect_err(
+    expect_err_code(
         attenuate(&mut svm, &s, &parent_owner, parent_capability, &child_over_owner, 0, 1, FAR_FUTURE, vec![merchant_ata]),
         "attenuate exceeding parent's remaining budget",
+        E_LEASH_CAP_EXCEEDED,
     );
 }
 
@@ -169,9 +173,10 @@ fn attenuate_rejects_depth_past_max_depth() {
     // Attenuating from C (depth 3, == MAX_DEPTH) must fail: attenuate requires
     // parent.depth < MAX_DEPTH.
     let too_deep_owner = Keypair::new();
-    expect_err(
+    expect_err_code(
         attenuate(&mut svm, &s, &chain.c_owner, chain.c_capability, &too_deep_owner, 0, 1, FAR_FUTURE, vec![merchant_ata]),
         "attenuate past MAX_DEPTH",
+        E_LEASH_DEPTH_EXCEEDED,
     );
 }
 
@@ -199,8 +204,9 @@ fn spend_respects_expiry_boundary() {
     // one).
     clock.unix_timestamp = expiry + 1;
     svm.set_sysvar(&clock);
-    expect_err(
+    expect_err_code(
         spend(&mut svm, &s, &principal, &principal_ta, &merchant_ata, 11),
         "spend one second after expiry",
+        E_HOOK_EXPIRED,
     );
 }

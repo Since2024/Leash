@@ -22,6 +22,10 @@ export type LeashProgram = {
   "instructions": [
     {
       "name": "attenuate",
+      "docs": [
+        "`nonce` plays the same role as in `issue`, scoped to `child_owner` — which is what",
+        "lets one parent delegate to the same owner more than once."
+      ],
       "discriminator": [
         56,
         166,
@@ -52,34 +56,11 @@ export type LeashProgram = {
           ]
         },
         {
-          "name": "childCapability",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  97,
-                  112,
-                  97,
-                  98,
-                  105,
-                  108,
-                  105,
-                  116,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "childOwner"
-              }
-            ]
-          }
-        },
-        {
           "name": "wrappedMint",
+          "docs": [
+            "leash-wrapped-USD mint. Mutable because minting increases supply. Typed so Anchor",
+            "can read its extensions to size the child's token account."
+          ],
           "writable": true
         },
         {
@@ -106,15 +87,74 @@ export type LeashProgram = {
         {
           "name": "childTokenAccount",
           "docs": [
-            "via CPI, owned by `child_owner` directly (same bearer-object model as `issue`)."
+            "The child's own wrapped-token account, at `[TOKEN_ACCOUNT_SEED, child_owner,",
+            "nonce]`, owned by `child_owner` directly (same bearer-object model as `issue`).",
+            "Declared before `child_capability`, whose seeds reference it."
           ],
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  112,
+                  97,
+                  98,
+                  105,
+                  108,
+                  105,
+                  116,
+                  121,
+                  45,
+                  116,
+                  111,
+                  107,
+                  101,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "childOwner"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "childCapability",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  112,
+                  97,
+                  98,
+                  105,
+                  108,
+                  105,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "childTokenAccount"
+              }
+            ]
+          }
         },
         {
           "name": "token2022Program"
-        },
-        {
-          "name": "associatedTokenProgram"
         },
         {
           "name": "systemProgram",
@@ -122,6 +162,10 @@ export type LeashProgram = {
         }
       ],
       "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
         {
           "name": "childCap",
           "type": "u64"
@@ -140,6 +184,12 @@ export type LeashProgram = {
     },
     {
       "name": "issue",
+      "docs": [
+        "`nonce` distinguishes this capability's token account from any other the same",
+        "principal holds, and so distinguishes the capability itself — see",
+        "constants::CAPABILITY_SEED. Callers who don't care may pass any value they",
+        "haven't used before; the SDK generates a random `u64`."
+      ],
       "discriminator": [
         190,
         1,
@@ -170,7 +220,9 @@ export type LeashProgram = {
         {
           "name": "wrappedMint",
           "docs": [
-            "configured at deployment time). Mutable because minting increases supply."
+            "leash-wrapped-USD mint (Token-2022, TransferHook extension already configured at",
+            "deployment time). Mutable because minting increases supply. Typed rather than",
+            "unchecked so Anchor can read its extensions to size the token account below."
           ],
           "writable": true
         },
@@ -191,6 +243,58 @@ export type LeashProgram = {
                   116,
                   121
                 ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "capabilityTokenAccount",
+          "docs": [
+            "This capability's own wrapped-token account, at `[TOKEN_ACCOUNT_SEED, principal,",
+            "nonce]`. Declared *before* `capability` because the capability's seeds reference",
+            "this account's key, and Anchor resolves fields in declaration order.",
+            "",
+            "It used to be the principal's associated token account, created by hand via a CPI",
+            "to the ATA program. An ATA is unique per (owner, mint), so it could only ever",
+            "represent one capability — the root of docs/ROADMAP.md 0.3. Anchor's `init` +",
+            "`token::*` constraints replace that CPI outright and size the account for the",
+            "mint's TransferHook extension automatically.",
+            "",
+            "`token::authority = principal` keeps the bearer-object model from BUILD_PLAN.md §0",
+            "intact: the holder controls the account directly, leash-program does not gate",
+            "access to it. Only the *address* is program-derived, not the authority."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  97,
+                  112,
+                  97,
+                  98,
+                  105,
+                  108,
+                  105,
+                  116,
+                  121,
+                  45,
+                  116,
+                  111,
+                  107,
+                  101,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "principal"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
               }
             ]
           }
@@ -217,19 +321,10 @@ export type LeashProgram = {
               },
               {
                 "kind": "account",
-                "path": "principal"
+                "path": "capabilityTokenAccount"
               }
             ]
           }
-        },
-        {
-          "name": "capabilityTokenAccount",
-          "docs": [
-            "created here via CPI to the associated-token-account program. Owned by",
-            "`principal` directly — the capability is a bearer object the holder controls,",
-            "not something leash-program gates access to (BUILD_PLAN.md §0)."
-          ],
-          "writable": true
         },
         {
           "name": "tokenProgram"
@@ -238,14 +333,15 @@ export type LeashProgram = {
           "name": "token2022Program"
         },
         {
-          "name": "associatedTokenProgram"
-        },
-        {
           "name": "systemProgram",
           "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
         {
           "name": "cap",
           "type": "u64"
@@ -261,6 +357,45 @@ export type LeashProgram = {
           }
         }
       ]
+    },
+    {
+      "name": "reclaim",
+      "docs": [
+        "Release budget reserved for a child that can no longer spend it, so the parent can",
+        "use or redeem it again. Accounting only — see reclaim.rs for why the child's units",
+        "cannot be burned. docs/ROADMAP.md 0.7."
+      ],
+      "discriminator": [
+        44,
+        177,
+        236,
+        249,
+        145,
+        109,
+        163,
+        186
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "parentCapability"
+          ]
+        },
+        {
+          "name": "parentCapability",
+          "writable": true
+        },
+        {
+          "name": "childCapability",
+          "docs": [
+            "Mutated: its `cap` is written down so the same budget cannot be reclaimed twice."
+          ],
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "recordSpend",
@@ -318,17 +453,26 @@ export type LeashProgram = {
           "signer": true
         },
         {
+          "name": "holderWrappedAccount",
+          "docs": [
+            "Declared before `capability`, whose seeds derive from it."
+          ],
+          "writable": true
+        },
+        {
           "name": "capability",
           "docs": [
-            "legitimately not exist (a merchant who holds received units and no capability) —",
-            "the handler distinguishes the two by inspecting owner/data rather than trusting",
-            "the caller, so this cannot be typed as `Account<Capability>` or `Option<_>`.",
-            "Mutable because a root's redemption writes `cap` back down.",
+            "the seeds constraint. May legitimately not exist (a merchant holding received",
+            "units) — the handler distinguishes the two by inspecting owner/data rather than",
+            "trusting the caller, so this cannot be typed as `Account<Capability>` or",
+            "`Option<_>`. Mutable because a root's redemption writes `cap` back down.",
             "",
-            "NOTE: this derivation assumes one capability per owner. When docs/ROADMAP.md 0.3",
-            "lands, capabilities are keyed off their own token account instead, and this",
-            "should derive from `holder_wrapped_account` — at which point the association",
-            "becomes exact rather than \"the capability this holder happens to have.\""
+            "Derived from the token account rather than the holder (docs/ROADMAP.md 0.3), which",
+            "makes the association exact: if a capability exists at this address then this",
+            "account *is* its token account, so the \"is this unspent budget?\" question is",
+            "answered by the derivation itself. Under the old owner-keyed scheme it could only",
+            "be answered as \"the one capability this holder happens to have,\" which stops being",
+            "good enough the moment an owner can hold several."
           ],
           "writable": true,
           "pda": {
@@ -350,14 +494,10 @@ export type LeashProgram = {
               },
               {
                 "kind": "account",
-                "path": "holder"
+                "path": "holderWrappedAccount"
               }
             ]
           }
-        },
-        {
-          "name": "holderWrappedAccount",
-          "writable": true
         },
         {
           "name": "wrappedMint",
@@ -435,6 +575,45 @@ export type LeashProgram = {
         }
       ],
       "args": []
+    },
+    {
+      "name": "revokeDescendant",
+      "docs": [
+        "Revoke a capability below you in the tree. Authority is proved by the target's own",
+        "`ancestors` array — the same one leash-hook already gates spends on. See",
+        "docs/ROADMAP.md 0.8."
+      ],
+      "discriminator": [
+        105,
+        73,
+        97,
+        174,
+        22,
+        162,
+        90,
+        196
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "ancestorCapability"
+          ]
+        },
+        {
+          "name": "ancestorCapability",
+          "docs": [
+            "The signer's own capability, somewhere above `descendant_capability` in the tree.",
+            "Not mutated — this is the proof of authority, not the target."
+          ]
+        },
+        {
+          "name": "descendantCapability",
+          "writable": true
+        }
+      ],
+      "args": []
     }
   ],
   "accounts": [
@@ -502,6 +681,21 @@ export type LeashProgram = {
       "code": 6009,
       "name": "delegatedCannotRedeem",
       "msg": "a delegated capability cannot redeem its budget; only spend it"
+    },
+    {
+      "code": 6010,
+      "name": "notAnAncestor",
+      "msg": "signer's capability is not an ancestor of the target capability"
+    },
+    {
+      "code": 6011,
+      "name": "notAChild",
+      "msg": "this capability is not a child of the given parent"
+    },
+    {
+      "code": 6012,
+      "name": "childStillLive",
+      "msg": "child is still live; revoke it or wait for expiry before reclaiming"
     }
   ],
   "types": [
@@ -641,8 +835,34 @@ export type LeashProgram = {
     },
     {
       "name": "capabilitySeed",
+      "docs": [
+        "A Capability PDA is `[CAPABILITY_SEED, its own token account]` — *not* keyed on the",
+        "owner. Keying on the owner is what limited each owner to a single capability forever",
+        "(docs/ROADMAP.md 0.3): a second `issue` collided with the first PDA. The nonce that",
+        "makes several capabilities possible lives in the token account's seeds below, and the",
+        "capability inherits the distinction by being derived from that address.",
+        "",
+        "This indirection is not stylistic. leash-hook must re-derive \"the Capability for this",
+        "transfer\" from **one fixed seed formula**, registered into the mint's",
+        "`ExtraAccountMetaList` at deployment and resolvable only from accounts the transfer",
+        "already carries — it cannot be handed a client-chosen nonce. The source token account",
+        "*is* one of those accounts (base account 0), so folding the nonce into its address",
+        "puts the disambiguator somewhere the hook can already reach."
+      ],
       "type": "string",
       "value": "\"capability\""
+    },
+    {
+      "name": "tokenAccountSeed",
+      "docs": [
+        "Seeds a capability's own wrapped-token account: `[TOKEN_ACCOUNT_SEED, owner, nonce]`,",
+        "nonce as little-endian `u64`. One per capability, rather than the single ATA per",
+        "(owner, mint) this used to rely on — an ATA is unique per owner, so it could not",
+        "represent more than one capability. See CAPABILITY_SEED above for why the nonce goes",
+        "here and not on the capability itself."
+      ],
+      "type": "string",
+      "value": "\"capability-token\""
     },
     {
       "name": "vaultSeed",

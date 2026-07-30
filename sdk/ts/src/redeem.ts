@@ -14,7 +14,10 @@ import type { LeashPrograms } from "./programs";
  * cashes out freely, a root capability's owner may unwind only its uncommitted budget,
  * and a delegated capability cannot redeem at all — it can only spend, through the hook.
  * The capability PDA is always passed, existing or not; the program checks on-chain
- * whether it exists rather than trusting the caller to declare it. */
+ * whether it exists rather than trusting the caller to declare it. It derives from
+ * `holderWrappedAccount`, not from the holder (docs/ROADMAP.md 0.3) — so a merchant's
+ * plain ATA simply yields an address with nothing at it, and a capability's own token
+ * account yields exactly the capability those units are the budget of. */
 export async function redeem(
   programs: LeashPrograms,
   holder: Keypair,
@@ -27,8 +30,8 @@ export async function redeem(
     .redeem(new BN(amount.toString()))
     .accounts({
       holder: holder.publicKey,
-      capability: capabilityPda(holder.publicKey, programs.leashProgramId),
       holderWrappedAccount,
+      capability: capabilityPda(holderWrappedAccount, programs.leashProgramId),
       wrappedMint: deployment.wrappedMint,
       vault: deployment.vault,
       programAuthority: programAuthorityPda(programs.leashProgramId),

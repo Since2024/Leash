@@ -63,12 +63,23 @@ pub fn expect_err(res: Result<(), String>, label: &str) {
 /// Anchor's `#[error_code]` numbers variants from 6000, so a `LeashError` /
 /// `LeashHookError` variant at index N surfaces on-chain as `Custom(6000 + N)`.
 pub const E_LEASH_CAP_EXCEEDED: u32 = 6000; // LeashError::CapExceeded (index 0)
-pub const E_LEASH_DELEGATED_CANNOT_REDEEM: u32 = 6009; // last variant in error.rs
+pub const E_LEASH_DEPTH_EXCEEDED: u32 = 6004; // LeashError::DepthExceeded (index 4)
+pub const E_LEASH_UNAUTHORIZED: u32 = 6006; // LeashError::Unauthorized (index 6)
+pub const E_LEASH_DELEGATED_CANNOT_REDEEM: u32 = 6009;
+pub const E_LEASH_NOT_AN_ANCESTOR: u32 = 6010; // LeashError::NotAnAncestor (index 10)
+pub const E_LEASH_NOT_A_CHILD: u32 = 6011;
+pub const E_LEASH_CHILD_STILL_LIVE: u32 = 6012; // last variant in error.rs
 pub const E_HOOK_REVOKED: u32 = 6000; // LeashHookError::Revoked (index 0)
 pub const E_HOOK_PARENT_REVOKED: u32 = 6001;
 pub const E_HOOK_EXPIRED: u32 = 6002;
 pub const E_HOOK_NOT_ALLOWLISTED: u32 = 6003;
 pub const E_HOOK_CAP_EXCEEDED: u32 = 6004;
+
+/// `TokenError::InsufficientFunds` — Token-2022's *own* balance check, which fires before
+/// leash-hook is ever consulted. Distinct from `E_HOOK_CAP_EXCEEDED`: asserting this one
+/// says "the token program stopped it", asserting that one says "leash-hook stopped it".
+/// Telling them apart is the whole of docs/ROADMAP.md 0.5.
+pub const E_TOKEN_INSUFFICIENT_FUNDS: u32 = 1;
 
 /// Asserts a call failed *for a specific reason*, not merely that it failed.
 ///
@@ -294,9 +305,18 @@ pub fn issue(
     expiry: i64,
     allowlist: Vec<Pubkey>,
 ) -> Result<(), String> {
+    // This helper predates ROADMAP 0.3 and assumed one issue per principal. Issuing twice
+    // to the same principal is now the point, so the funding steps have to tolerate a
+    // repeat: the USDC ATA already exists the second time, and the airdrop/mint would
+    // otherwise be byte-identical transactions that get rejected as duplicates rather
+    // than run. Expiring the blockhash keeps each funding tx distinct; the ATA creation
+    // is skipped outright when it is already there.
+    svm.expire_blockhash();
     svm.airdrop(&principal.pubkey(), 5_000_000_000).unwrap();
     let principal_usdc = ata(&principal.pubkey(), &s.usdc_mint, &spl_token::id());
-    send(svm, &s.payer, &[], &[create_ata_ix(&s.payer.pubkey(), &principal.pubkey(), &s.usdc_mint, &spl_token::id())]).unwrap();
+    if svm.get_account(&principal_usdc).map_or(true, |a| a.data.is_empty()) {
+        send(svm, &s.payer, &[], &[create_ata_ix(&s.payer.pubkey(), &principal.pubkey(), &s.usdc_mint, &spl_token::id())]).unwrap();
+    }
 
     // Fund the principal with at least `cap` USDC to deposit.
     let mint_usdc_ix = spl_token::instruction::mint_to(
@@ -346,6 +366,9 @@ pub fn attenuate(
     child_expiry: i64,
     child_allowlist: Vec<Pubkey>,
 ) -> Result<(), String> {
+    // As in `issue`: delegating twice to the same child_owner is exactly what ROADMAP 0.3
+    // enables, so a repeated identical airdrop must not collide with the first.
+    svm.expire_blockhash();
     svm.airdrop(&child_owner.pubkey(), 1_000_000_000).unwrap();
     let (child_capability, child_token_account) = capability_for(&child_owner.pubkey(), nonce);
 
@@ -383,6 +406,58 @@ pub fn revoke(svm: &mut LiteSVM, s: &Setup, owner: &Keypair, capability: Pubkey)
         }
         .to_account_metas(None),
         data: leash_program::instruction::Revoke {}.data(),
+    };
+    send(svm, &s.payer, &[owner], &[ix])
+}
+
+/// `owner` (holder of `ancestor_capability`) revokes `descendant_capability` somewhere
+/// below it in the tree — docs/ROADMAP.md 0.8.
+pub fn revoke_descendant(
+    svm: &mut LiteSVM,
+    s: &Setup,
+    owner: &Keypair,
+    ancestor_capability: Pubkey,
+    descendant_capability: Pubkey,
+) -> Result<(), String> {
+    // Both of these instructions take no arguments, so two calls against the same
+    // accounts serialize to byte-identical transactions and the second is rejected as
+    // `AlreadyProcessed` before the program ever runs. That would masquerade as the
+    // program refusing — and testing idempotency requires genuinely distinct
+    // transactions, so advance the blockhash rather than perturbing the call.
+    svm.expire_blockhash();
+    let ix = anchor_lang::solana_program::instruction::Instruction {
+        program_id: PROGRAM_ID,
+        accounts: leash_program::accounts::RevokeDescendant {
+            owner: owner.pubkey(),
+            ancestor_capability,
+            descendant_capability,
+        }
+        .to_account_metas(None),
+        data: leash_program::instruction::RevokeDescendant {}.data(),
+    };
+    send(svm, &s.payer, &[owner], &[ix])
+}
+
+/// `owner` (holder of `parent_capability`) releases the budget reserved for a dead
+/// `child_capability` — docs/ROADMAP.md 0.7.
+pub fn reclaim(
+    svm: &mut LiteSVM,
+    s: &Setup,
+    owner: &Keypair,
+    parent_capability: Pubkey,
+    child_capability: Pubkey,
+) -> Result<(), String> {
+    // See the note in `revoke_descendant` — same argument-less duplicate-transaction trap.
+    svm.expire_blockhash();
+    let ix = anchor_lang::solana_program::instruction::Instruction {
+        program_id: PROGRAM_ID,
+        accounts: leash_program::accounts::Reclaim {
+            owner: owner.pubkey(),
+            parent_capability,
+            child_capability,
+        }
+        .to_account_metas(None),
+        data: leash_program::instruction::Reclaim {}.data(),
     };
     send(svm, &s.payer, &[owner], &[ix])
 }
@@ -442,6 +517,10 @@ pub fn spend(
     )
     .unwrap();
 
+    // Resolution failure is a real spend failure, not a test-harness bug: if the source
+    // has no Capability keyed to it, the hook's seed formula resolves to an account that
+    // does not exist and the transfer can never be built. Surface that as an `Err` like
+    // any other rejection instead of panicking, so callers can assert on it.
     futures::executor::block_on(
         spl_transfer_hook_interface::offchain::add_extra_account_metas_for_execute(
             &mut transfer_ix,
@@ -457,7 +536,7 @@ pub fn spend(
             },
         ),
     )
-    .unwrap();
+    .map_err(|e| format!("extra-account resolution failed: {:?}", e))?;
 
     send(svm, &s.payer, &[source_owner], &[transfer_ix])
 }

@@ -2,7 +2,6 @@ import {
   TOKEN_2022_PROGRAM_ID,
   addExtraAccountMetasForExecute,
   createTransferCheckedInstruction,
-  getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import type { Deployment } from "./deployment";
@@ -15,25 +14,26 @@ import type { LeashPrograms } from "./programs";
  * the token-program level, not in this SDK function. If cap/expiry/allowlist/revoked
  * (or any ancestor's revoked, up to MAX_DEPTH) fails, the transaction fails — `spend()`
  * does not pre-check any of that itself.
+ *
+ * `source` is the capability's own token account, and it is explicit rather than derived
+ * from `sourceOwner`: an owner may hold several capabilities (docs/ROADMAP.md 0.3), so
+ * the owner alone no longer names one. Use `capabilityFor(owner, nonce, programId)` or
+ * the `capabilityTokenAccount` returned by `mint`/`attenuate`. Which capability is
+ * charged follows from this account — leash-hook re-derives it from exactly this address.
  */
 export async function spend(
   programs: LeashPrograms,
   deployment: Deployment,
   sourceOwner: Keypair,
+  source: PublicKey,
   destination: PublicKey,
   amount: bigint,
   decimals = 6,
 ): Promise<string> {
   const { connection, leashHookId } = programs;
-  const sourceAta = getAssociatedTokenAddressSync(
-    deployment.wrappedMint,
-    sourceOwner.publicKey,
-    false,
-    TOKEN_2022_PROGRAM_ID,
-  );
 
   const transferIx = createTransferCheckedInstruction(
-    sourceAta,
+    source,
     deployment.wrappedMint,
     destination,
     sourceOwner.publicKey,
@@ -47,7 +47,7 @@ export async function spend(
     connection,
     transferIx,
     leashHookId,
-    sourceAta,
+    source,
     deployment.wrappedMint,
     destination,
     sourceOwner.publicKey,

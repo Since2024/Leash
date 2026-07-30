@@ -7,8 +7,11 @@ directory. Shared test helpers live in `programs/leash-program/tests/common/mod.
 One test per line, each proving a violation attempt fails:
 
 - [x] spend exactly at cap succeeds; one unit over fails — `week3_spend_enforcement.rs`
-      (caveat: the over-cap case is observably identical to Token-2022's own
-      insufficient-balance rejection in this MVP; see BUILD_PLAN.md §5 Week 3 results)
+      (the old caveat — that the over-cap case was observably identical to Token-2022's
+      own insufficient-balance rejection — no longer applies. The same file now also
+      spends past a *delegating* parent's remaining budget while it still holds the full
+      balance, which Token-2022 is happy with, so the `CapExceeded` there is provably the
+      hook's. Both cases assert their specific error code. See docs/ROADMAP.md 0.5.)
 - [x] spend before expiry succeeds; one second after fails —
       `week4_ancestor_chain_and_fuzz.rs::spend_respects_expiry_boundary`
 - [x] spend to an allowlisted destination succeeds; any other destination fails —
