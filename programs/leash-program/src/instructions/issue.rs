@@ -1,9 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::associated_token::spl_associated_token_account;
 use anchor_spl::token::{self, Transfer};
 use anchor_spl::token_2022::{self as token_2022, MintTo};
+use anchor_spl::token_interface::{Mint, TokenAccount};
 
-use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN};
+use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN, TOKEN_ACCOUNT_SEED};
 use crate::error::LeashError;
 use crate::state::Capability;
 
@@ -16,7 +16,7 @@ use crate::state::Capability;
 /// once, off-chain/client-side (exactly as in the Week 1 spike test) — this instruction
 /// operates against an already-configured deployment, it doesn't set one up.
 #[derive(Accounts)]
-#[instruction(cap: u64, expiry: i64, allowlist: Vec<Pubkey>)]
+#[instruction(nonce: u64, cap: u64, expiry: i64, allowlist: Vec<Pubkey>)]
 pub struct Issue<'info> {
     #[account(mut)]
     pub principal: Signer<'info>,
@@ -30,42 +30,59 @@ pub struct Issue<'info> {
     #[account(mut)]
     pub vault: UncheckedAccount<'info>,
 
-    /// CHECK: leash-wrapped-USD mint (Token-2022, TransferHook extension already
-    /// configured at deployment time). Mutable because minting increases supply.
+    /// leash-wrapped-USD mint (Token-2022, TransferHook extension already configured at
+    /// deployment time). Mutable because minting increases supply. Typed rather than
+    /// unchecked so Anchor can read its extensions to size the token account below.
     #[account(mut)]
-    pub wrapped_mint: UncheckedAccount<'info>,
+    pub wrapped_mint: InterfaceAccount<'info, Mint>,
 
     /// CHECK: PDA that is the wrapped mint's mint authority. Not read, only signs.
     #[account(seeds = [AUTHORITY_SEED.as_bytes()], bump)]
     pub program_authority: UncheckedAccount<'info>,
 
+    /// This capability's own wrapped-token account, at `[TOKEN_ACCOUNT_SEED, principal,
+    /// nonce]`. Declared *before* `capability` because the capability's seeds reference
+    /// this account's key, and Anchor resolves fields in declaration order.
+    ///
+    /// It used to be the principal's associated token account, created by hand via a CPI
+    /// to the ATA program. An ATA is unique per (owner, mint), so it could only ever
+    /// represent one capability — the root of docs/ROADMAP.md 0.3. Anchor's `init` +
+    /// `token::*` constraints replace that CPI outright and size the account for the
+    /// mint's TransferHook extension automatically.
+    ///
+    /// `token::authority = principal` keeps the bearer-object model from BUILD_PLAN.md §0
+    /// intact: the holder controls the account directly, leash-program does not gate
+    /// access to it. Only the *address* is program-derived, not the authority.
+    #[account(
+        init,
+        payer = principal,
+        seeds = [TOKEN_ACCOUNT_SEED.as_bytes(), principal.key().as_ref(), &nonce.to_le_bytes()],
+        bump,
+        token::mint = wrapped_mint,
+        token::authority = principal,
+        token::token_program = token_2022_program,
+    )]
+    pub capability_token_account: InterfaceAccount<'info, TokenAccount>,
+
     #[account(
         init,
         payer = principal,
         space = Capability::MAX_SIZE,
-        seeds = [CAPABILITY_SEED.as_bytes(), principal.key().as_ref()], // TODO: real seed scheme (nonce for multiple root caps per principal)
+        seeds = [CAPABILITY_SEED.as_bytes(), capability_token_account.key().as_ref()],
         bump,
     )]
     pub capability: Account<'info, Capability>,
-
-    /// CHECK: fresh Token-2022 account holding this capability's wrapped balance,
-    /// created here via CPI to the associated-token-account program. Owned by
-    /// `principal` directly — the capability is a bearer object the holder controls,
-    /// not something leash-program gates access to (BUILD_PLAN.md §0).
-    #[account(mut)]
-    pub capability_token_account: UncheckedAccount<'info>,
 
     /// CHECK: legacy SPL Token program, for the deposit transfer.
     pub token_program: UncheckedAccount<'info>,
     /// CHECK: Token-2022 program, for minting wrapped units.
     pub token_2022_program: UncheckedAccount<'info>,
-    /// CHECK: associated-token-account program, for creating capability_token_account.
-    pub associated_token_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
 pub fn issue_handler(
     ctx: Context<Issue>,
+    _nonce: u64,
     cap: u64,
     expiry: i64,
     allowlist: Vec<Pubkey>,
@@ -88,23 +105,8 @@ pub fn issue_handler(
         cap,
     )?;
 
-    // 2. Create the capability's wrapped-token account (ATA, owned by principal).
-    anchor_lang::solana_program::program::invoke(
-        &spl_associated_token_account::instruction::create_associated_token_account(
-            ctx.accounts.principal.key,
-            ctx.accounts.principal.key,
-            ctx.accounts.wrapped_mint.key,
-            ctx.accounts.token_2022_program.key,
-        ),
-        &[
-            ctx.accounts.principal.to_account_info(),
-            ctx.accounts.capability_token_account.to_account_info(),
-            ctx.accounts.principal.to_account_info(),
-            ctx.accounts.wrapped_mint.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_2022_program.to_account_info(),
-        ],
-    )?;
+    // 2. The capability's wrapped-token account is created by Anchor's `init` +
+    // `token::*` constraints above, before this handler runs — no manual CPI needed.
 
     // 3. Mint `cap` wrapped units to that fresh account, signed by the program's
     // mint-authority PDA.
