@@ -1,0 +1,103 @@
+name: CI
+
+# Every check in this repo was run by hand until now, which means "the tests pass" was
+# only ever a statement about one machine at one moment (docs/ROADMAP.md, Phase 1).
+# This makes it a property of the branch instead.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Matches the local toolchain recorded in CLAUDE.md (`solana-cli 4.1.1`). Pinned rather
+  # than tracking `stable`, so a toolchain change is a visible commit here and not a
+  # mystery failure on an unrelated PR.
+  SOLANA_VERSION: v4.1.1
+
+jobs:
+  programs:
+    name: programs (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel (1.89.0) and components, so rustup installs
+      # the right one automatically on first cargo invocation.
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Cache Solana toolchain
+        id: solana-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana
+          key: solana-${{ runner.os }}-${{ env.SOLANA_VERSION }}
+
+      - name: Install Solana toolchain
+        if: steps.solana-cache.outputs.cache-hit != 'true'
+        run: sh -c "$(curl -sSfL https://release.anza.xyz/${SOLANA_VERSION}/install)"
+
+      - name: Add Solana to PATH
+        run: echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          solana --version
+          cargo --version
+
+      - name: Check workspace
+        run: cargo check --workspace --tests
+
+      # The integration tests `include_bytes!` these .so files, so they must exist and be
+      # current *before* `cargo test` compiles the test crates. Deleting first is not
+      # paranoia: `cargo-build-sbf` will no-op when it believes the crate is unchanged,
+      # which locally left a stale binary in place while reporting success. A fresh
+      # checkout makes that unlikely here, but the cache restores `target/`, so the same
+      # trap is reachable. Never build these with `anchor build` — see CLAUDE.md.
+      - name: Build programs (SBF)
+        run: |
+          rm -f target/deploy/leash_program.so target/deploy/leash_hook.so
+          cargo-build-sbf --manifest-path programs/leash-program/Cargo.toml
+          cargo-build-sbf --manifest-path programs/leash-hook/Cargo.toml
+          ls -l target/deploy/*.so
+
+      # No `--nocapture`: the helpers print every transaction's logs, which is invaluable
+      # when something fails and pure noise when nothing does. Cargo already replays the
+      # captured output for failing tests only.
+      - name: Test
+        run: cargo test --workspace
+
+  typescript:
+    name: sdk + cli (build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The CLI depends on the SDK via `file:../sdk/ts`, so the SDK has to be installed
+      # and compiled to dist/ before the CLI can typecheck against it. Order matters.
+      - name: Build SDK
+        working-directory: sdk/ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build CLI
+        working-directory: cli
+        run: |
+          npm ci
+          npm run build
