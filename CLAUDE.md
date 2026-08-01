@@ -83,9 +83,24 @@ superseded by Week 3.
 `revoke` is a real one-line flip, joined by `revoke_descendant` (an ancestor revoking
 someone below it) and `reclaim` (releasing a dead child's reservation). Nothing is stubbed
 in either program anymore.
-"Fuzz suite" here still means a checklist of specific hand-built cases, not
-generated/randomized fuzzing — see `tests/invariants/README.md`'s closing note if
-that distinction matters for what you're about to rely on.
+**Randomized fuzzing now exists**, alongside the hand-built checklist in
+`tests/invariants/README.md` (which remains exactly that — specific cases, not generated
+ones). `fuzz_conservation.rs` drives random *sequences* of instructions against a growing
+capability tree and checks two invariants after every operation: per-node
+`spent + committed_to_children <= cap`, and global solvency (every claim that can still
+reach the vault, summed, never exceeds the vault). Seeded xorshift, no dependency, so a
+failing seed replays exactly.
+
+It earned its place immediately: it found a real bug in `reclaim` on its first run
+(seed 1, step 31). Run the wide sweep after touching any accounting path — `attenuate`,
+`record_spend`, `redeem`, `reclaim`:
+
+```
+cargo test -p leash-program --test fuzz_conservation -- --ignored --nocapture
+```
+
+If it fails, pin the failing seed into the default test list so the case stops depending
+on luck.
 
 Solana CLI is Agave 4.1.1 / platform-tools v1.54 (upgraded during Week 1). Workspace
 compiles (`cargo check --workspace --tests`), both programs build to real `.so` files via
@@ -117,6 +132,13 @@ instruction has a typed wrapper, and the full loop (`init` -> `mint` -> `spend` 
 fetch/decode -> `revoke` -> `spend` fails on-chain) was proven end-to-end against a real
 `solana-test-validator`, not just type-checked.
 
+**Raw wrapped `supply` is not a solvency figure and never has been.** `attenuate` mints
+the child's units fresh rather than moving the parent's, so supply exceeds the vault by
+every live delegation; dead delegations strand units on top of that (ROADMAP 0.10). Use
+`redeemableSupply()` / `leash supply` and compare the vault against **`claimable`**. A
+first cut of that helper subtracted only dead capabilities and was wrong — caught by
+running it against a validator, not by review.
+
 Post-0.3, `mint`/`attenuate` take an optional nonce and **return the one they used** —
 keep it, it re-derives the capability's addresses. `spend`/`revoke`/`watch`/`attenuate`
 require an explicit `--capability` or `--nonce` and refuse to guess, since defaulting
@@ -127,6 +149,19 @@ brute-forces small sequential values only) and says so instead of printing a bla
 the four real bugs this surfaced (Anchor's JS coder lowercasing account names, missing
 feePayer/recentBlockhash on raw transactions, `anchor build`'s stricter CHECK-comment
 lint, and a stale-ledger false-crash).
+
+## CI
+
+`.github/workflows/ci.yml` runs on push to `main` and on every PR: a `programs` job
+(cargo check → `cargo-build-sbf` both programs → `cargo test --workspace`) and a
+`typescript` job (SDK then CLI — the CLI depends on the SDK via `file:../sdk/ts`).
+Solana is pinned to `v4.1.1`. The workflow deletes `target/deploy/*.so` before building,
+because the cache restores `target/` and `cargo-build-sbf` silently no-ops on a crate it
+thinks is unchanged.
+
+`cargo fmt --check` and `clippy` are **not** in CI: formatting does not currently pass, and
+a red-on-arrival pipeline gets ignored. Reformat in a dedicated commit first, then add the
+gate.
 
 ## Explicit non-goals for this phase
 
@@ -158,6 +193,7 @@ leash/
       redeem_authorization.rs
       multi_capability.rs
       reclaim_and_descendant_revoke.rs
+      fuzz_conservation.rs     Randomized instruction sequences (found a real reclaim bug)
   programs/leash-hook/
     src/                      Token-2022 TransferHook enforcement
   tests/invariants/           Tracking checklist for BUILD_PLAN.md §8 — fully checked as

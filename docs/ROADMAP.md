@@ -51,10 +51,12 @@ parent cannot revoke one delegation without cutting off all of them.
 **Phase 0 now stands at 0.1 through 0.8 done.** 0.7 and 0.8 landed together as
 `reclaim` + `revoke_descendant`, which is what finally makes "cut this agent off and take
 the money back" expressible — the loop the pitch in `leash.txt` describes and the code
-could not previously perform. Remaining: 0.9 (allowlist ergonomics, a product decision
-more than a correctness gap) and 0.10, which 0.7 introduced knowingly — dead children's
-units can't be burned, so wrapped supply overstates redeemable value even though the vault
-covers everything that can actually move.
+could not previously perform. 0.10 is addressed by reporting: `redeemableSupply()` computes the real
+claim on the vault, since raw supply has never equalled backing (live delegations
+double-count by design, and dead ones strand units). Remaining: 0.9 (allowlist ergonomics,
+a product decision more than a correctness gap). Making `attenuate` transfer rather than
+mint would make supply equal backing outright, but it is **declined** — it would break
+unilateral `reclaim`; see 0.10.
 
 ---
 
@@ -431,11 +433,16 @@ spendable as capability budget.
       more than the vault backs — the invariant 0.2 protects. It releases `cap - spent`,
       never the full delegation, since units the child already spent are genuinely gone.
 
+      It releases the child's **free** budget — `cap - spent - committed_to_children` —
+      not simply what the child has not spent. Releasing `cap - spent` was the original
+      implementation and was wrong for any child that had itself delegated onward; see the
+      fuzzing entry in Phase 1 for how that surfaced. Budget sitting under a grandchild is
+      recovered bottom-up: revoke and reclaim the grandchild first, then repeat here.
+
       Guards, each covered by a test: refuses while the child is live
       (`ChildStillLive`); only the **immediate** parent may call it (`NotAChild`), because
-      `attenuate` records the reservation nowhere else; and it is idempotent, writing the
-      child's `cap` down to `spent` so a second call releases nothing rather than crediting
-      the parent twice. **The liveness guard was verified to be load-bearing**: disabling
+      `attenuate` records the reservation nowhere else; and it is idempotent, so a second
+      call releases nothing rather than crediting the parent twice. **The liveness guard was verified to be load-bearing**: disabling
       it and rebuilding makes two tests fail.
 
       Covered by `programs/leash-program/tests/reclaim_and_descendant_revoke.rs`, and
@@ -496,31 +503,86 @@ spendable as capability budget.
       not needed until 10 is the binding constraint — but 10 is low enough that it may
       bind sooner than expected.
 
-### 0.10 Wrapped supply overstates redeemable value
+### 0.10 Wrapped supply is not a solvency figure
 
-- [ ] **Introduced deliberately by 0.7**, and the reason it is acceptable is written up
-      there: `reclaim` cannot burn a dead child's unspent units, because the token
-      account's authority is the child (the bearer model), not this program. Those units
-      are inert — a revoked or expired capability cannot spend, and a delegated one cannot
-      redeem — but they still count toward the wrapped mint's `supply`.
+- [x] **Addressed by reporting, not by burning.** Raw `supply` overstates the real claim
+      on the vault, for two separate reasons. Only the second was known when this item was
+      filed:
 
-      Nothing on-chain reads total supply, so nothing currently breaks. The risk is
-      **interpretive**: anyone auditing solvency by comparing wrapped supply against the
-      vault balance will see a shortfall that is not real, and the gap grows with every
-      delegation that ends without being fully spent. That is a bad property for a system
-      whose whole pitch is that the token enforces the limit.
+      1. **Live delegations double-count, by design.** `attenuate` mints the child's units
+         *fresh* rather than moving the parent's (BUILD_PLAN.md §5 D3), so a parent that
+         delegates 400 of 1_000 still holds 1_000 while only 600 is spendable. Supply is
+         1_400 against a 1_000 deposit. This has been true since Week 3 and is not a
+         defect — it is what makes the parent's balance independent of its children's —
+         but it means supply has *never* equalled backing.
+      2. **Dead delegations strand units** (introduced by 0.7): `reclaim` releases a dead
+         child's budget but cannot burn its units, since that token account's authority is
+         the child, not the program.
 
-      Note this is distinct from 0.2's over-issuance, which was a genuine solvency hole.
-      Here the vault is fully sufficient for every unit that can actually move; only the
-      headline number is wrong.
+      **`PermanentDelegate` was investigated and rejected — do not re-litigate it without
+      new information.** Token-2022's `PermanentDelegate` extension does exactly what is
+      needed: its own definition is "optional permanent delegate for transferring or
+      burning tokens", so `reclaim` could burn a dead child's units with no child
+      signature. Two findings killed it:
 
-      Options, none obviously right yet: have `attenuate` make the program a delegate on
-      the child's token account at creation time so `reclaim` can burn without the child
-      signing (needs checking against the bearer model — a delegate is not an owner, so
-      this may be compatible); or expose a "redeemable supply" figure that subtracts dead
-      capabilities' balances, and be explicit that raw `supply` is not the solvency
-      metric. Prefer the former if it holds up, since a number nobody has to know to
-      interpret is worth more than a caveat.
+      - It **cannot be added to an existing mint**. The instruction's own docs: *"Fails if
+        the mint has already been initialized, so must be called before `InitializeMint`."*
+        Adopting it means a new wrapped mint, a re-registered `ExtraAccountMetaList`, and
+        orphaning every existing balance — a redeployment, not an upgrade.
+      - More importantly, a permanent delegate can transfer or burn from **any** account
+        of the mint, including **merchants'** received units. Today merchants sit outside
+        the program's trust boundary entirely; their balances are theirs and `redeem` is
+        unconditional for them. This would pull them inside it, and since the program is
+        upgradeable, whoever holds upgrade authority could later seize or burn anything.
+        That guts the "as good as cash" property merchants rely on, to fix a number.
+        Wrong trade.
+
+      (`PermissionedBurn`, which appears nearby in the extension list, is the opposite of
+      what is wanted: its authority is *required for* burning — a gate, not a grant. A
+      plain `Approve` delegate is also unavailable, since it needs the account owner's
+      signature and the child does not sign its own `attenuate`.)
+
+      **What landed instead:** `redeemableSupply()` (`sdk/ts/src/supply.ts`) and a
+      `leash supply` command, computing the claim directly rather than subtracting
+      artifacts from supply — merchant-held units, plus each capability's
+      `cap - spent - committed_to_children`, with dead *delegated* capabilities
+      contributing nothing. Dead **roots** still contribute, because `redeem` gates on
+      `depth == 0` alone and consults neither `revoked` nor `expiry`, so a root can always
+      unwind; treating roots as dead would understate the claim, which is the more
+      dangerous direction.
+
+      A first version of this subtracted only dead capabilities and was **wrong** — it
+      reported 1_400 claimable against a 1_000 vault, because it missed cause (1) above.
+      Caught by running it against a live validator rather than reasoning about it. The
+      corrected figure was then checked across four states: live delegation, after a
+      partial spend, after revocation, and after reclaim — matching the vault at every
+      point, and dipping to 750 between revoke and reclaim, which is real: until the
+      parent reclaims, that budget is claimable by nobody.
+
+      **Compare the vault against `claimable`, never against `totalSupply`.**
+
+- **Declined: making `attenuate` transfer instead of mint.** This was written here first
+  as "the only real fix" — if `attenuate` moved the parent's units rather than minting
+  fresh ones, supply would equal backing at all times and both causes above would vanish.
+  That is true, and it is still the wrong trade.
+
+  **It would break `reclaim`.** With a transfer, the delegated units leave the parent's
+  account, so recovering them means moving tokens back from child to parent — which needs
+  the **child's signature**, since that account's authority is the child. A revoked agent
+  has no reason to provide it. Unilateral reclaim (0.7) works *precisely because* the
+  parent still physically holds the units and `reclaim` is pure accounting.
+
+  So the mint-based design is what makes revocable delegation recoverable without the
+  agent's cooperation, and the supply artifact is the price of that. BUILD_PLAN.md §5 D3
+  chose minting for a different reason (a transfer fires the hook and would be checked
+  against the parent's allowlist, which the child's token account is not on), but this is
+  the stronger one and it was not visible until 0.7 existed.
+
+  Revisit only if the trade itself changes — e.g. if delegation stops needing to be
+  recoverable without the child, or if a Token-2022 mechanism appears that permits a
+  scoped burn without granting blanket transfer authority over every holder. Neither is
+  true today. Do not attempt the transfer redesign as a cleanup; it silently costs a
+  feature that took real work to get.
 
 ---
 
@@ -530,16 +592,49 @@ Nothing here changes behaviour. It's the work that makes the claim "this is corr
 survive someone else's scrutiny — which, per leash.txt's own risk list, is the difference
 between a credible primitive and an unrecoverable incident.
 
-- [ ] **Randomized fuzzing.** The "fuzz suite" in `tests/invariants/README.md` is a
-      checklist of specific, hand-built cases — the README says so explicitly. Genuine
-      property-based testing over *sequences* of instructions (`trident`, or `proptest`
-      over a state machine) is a different thing and is a real gap.
+- [x] **Randomized fuzzing — and it immediately found a real bug.**
+      `programs/leash-program/tests/fuzz_conservation.rs` drives random *sequences* of
+      instructions (issue, attenuate, spend, revoke, revoke_descendant, reclaim, redeem,
+      plus clock advances) against a growing capability tree, checking invariants after
+      **every** operation, including ones that fail.
 
-      The invariant to drive it is `spent + committed_to_children <= cap`, for every node,
-      after every operation. That invariant now holds on `main` (0.2), and is enforced at
-      both write paths — but it is currently proven only by the hand-built cases in
-      `conservation_invariant.rs`. Fuzzing is what would have found 0.2 in the first
-      place; it is what would show whether a sibling case survives.
+      Two properties, and the second is the stronger:
+
+      1. Per-node `spent + committed_to_children <= cap` — what `state.rs` advertises and
+         what 0.2 violated.
+      2. Global solvency — every claim that can still legitimately reach the vault, summed,
+         never exceeds the vault balance. Per-node conservation can hold at every node
+         while the tree as a whole still promises more than it can pay; this is also what
+         0.1 violated without breaking property 1 anywhere.
+
+      No `proptest`/`trident` dependency: a seeded xorshift is written out inline, because
+      replayability matters here and distribution quality does not. Failing assertions
+      carry seed and step, and the same seed replays the sequence exactly.
+
+      **What it found, on its first run:** `reclaim` (0.7, written days earlier and covered
+      by six hand-built tests) released `cap - spent` and wrote the child's `cap` down to
+      `spent`. On a *middle* node — one that had itself delegated onward — that left
+      `cap = 0` with `committed_to_children = 97`, so the invariant read `0 + 97 <= 0`.
+      Seed 1, step 31. No funds were ever at risk, because the grandchildren's spends die
+      on the hook's ancestor walk, so global solvency never broke — but the number the
+      program advertises and computes with was false. Every hand-built test missed it: they
+      all reclaimed from leaves.
+
+      Fixed by releasing only the child's *free* budget, leaving
+      `cap == spent + committed_to_children`, and making deep recovery an explicit
+      bottom-up walk. Pinned as a named regression
+      (`reclaiming_from_a_middle_node_preserves_conservation`) so it no longer depends on a
+      seed. **The fuzzer was verified to detect it**: reverting the fix reproduces the same
+      failure at the same seed and step.
+
+      A wide sweep (60 seeds × 150 operations ≈ 9_000 operations) is `#[ignore]`d so the
+      default run stays seconds rather than minutes; it passes clean. Run it after touching
+      any accounting path, and pin any new failing seed into the default list:
+      `cargo test -p leash-program --test fuzz_conservation -- --ignored --nocapture`.
+
+      This is the entry that predicted "fuzzing is what would have found 0.2 in the first
+      place." It did not find 0.2, which was already fixed — it found the bug introduced by
+      fixing 0.7.
 - [ ] **A written argument for the conservation invariant.** `checked_*` arithmetic is
       used throughout, but the invariant currently holds — where it holds at all — by
       case-by-case inspection of `issue`/`attenuate`/`record_spend`. It deserves an
@@ -564,9 +659,37 @@ between a credible primitive and an unrecoverable incident.
       Who holds that authority on mainnet, and whether it's eventually burned or moved to
       a multisig, is a trust question that has to be answered before anyone deposits real
       funds — it currently isn't documented anywhere.
-- [ ] **There is no CI.** No `.github/workflows` directory exists at all. Every check in
-      this document that says "add a CI step" is new infrastructure, not a repair to
-      something already running.
+- [x] **CI now exists** (`.github/workflows/ci.yml`). There was no `.github/workflows`
+      directory at all, so every check in this document that says "add a CI step" was new
+      infrastructure rather than a repair — that part is now built, and later items can
+      attach steps to it.
+
+      Two jobs: `programs` (cargo check → build both `.so` with `cargo-build-sbf` → `cargo
+      test --workspace`) and `typescript` (SDK then CLI, since the CLI depends on the SDK
+      via `file:../sdk/ts` and needs its `dist/`). The Solana toolchain is pinned to
+      `v4.1.1` to match CLAUDE.md rather than tracking `stable`, so a toolchain bump is a
+      visible commit instead of a mystery failure on an unrelated PR.
+
+      The workflow deletes `target/deploy/*.so` before building. That is not ceremony:
+      `cargo-build-sbf` no-ops when it believes the crate is unchanged, which locally left
+      a stale binary in place while reporting success — and since the job restores a
+      cached `target/`, the same trap is reachable in CI. The tests `include_bytes!` those
+      files, so a stale one means testing a program that is not the one in the diff.
+
+      Verified before landing, not just written: the workflow's exact command sequence was
+      run locally end to end, and `npm ci` (stricter than `npm install`) was confirmed to
+      work in both packages in the order the jobs use.
+
+      **Deliberately not included: `cargo fmt --check` and `clippy`.** `cargo fmt --check`
+      does not currently pass, and a pipeline that is red on its first run teaches everyone
+      to ignore it. Format the codebase first, in its own commit, then add the gate.
+
+      Still worth adding later: a step asserting the checked-in IDL under `sdk/ts/src/idl/`
+      still matches the programs. Nothing today catches an instruction changing without
+      the IDL being regenerated, which would break the SDK silently. It needs `anchor
+      build` in CI, which is awkward because `anchor build` swaps the sbpf toolchain (see
+      CLAUDE.md) — so it must regenerate the IDL *only*, and never produce the `.so` the
+      tests use.
 
 ## Phase 2 — Ergonomics and developer experience
 
