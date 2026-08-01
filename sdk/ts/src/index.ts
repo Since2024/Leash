@@ -9,5 +9,6 @@ export * from "./redeem";
 export * from "./spend";
 export * from "./watch";
 export * from "./find";
+export * from "./supply";
 export { leashProgramIdl, leashHookIdl } from "./idl";
 export type { LeashProgram, LeashHook } from "./idl";
