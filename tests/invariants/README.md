@@ -31,11 +31,17 @@ One test per line, each proving a violation attempt fails:
 - [x] attenuate past MAX_DEPTH — fails —
       `week4_ancestor_chain_and_fuzz.rs::attenuate_rejects_depth_past_max_depth`
 
-All items checked. What this suite is *not*: property-based/randomized fuzzing in the
-AFL/honggfuzz sense — every scenario above is a specific, hand-constructed case, not a
-generated one. "Fuzz" in BUILD_PLAN.md's original phrasing meant this checklist; genuine
-randomized fuzzing (e.g. via `trident` or `proptest` over instruction sequences) remains
-a real gap if deeper assurance is ever needed before real funds touch this program.
+All items checked. What this suite is *not*: property-based/randomized fuzzing — every
+scenario above is a specific, hand-constructed case, not a generated one. "Fuzz" in
+BUILD_PLAN.md's original phrasing meant this checklist.
+
+That gap is now filled separately, and the distinction still matters: randomized fuzzing
+lives in `programs/leash-program/tests/fuzz_conservation.rs`, which drives random
+*sequences* of instructions and asserts per-node conservation plus global solvency after
+every operation. The two complement each other — this checklist pins named behaviours at
+named boundaries, the fuzzer explores states nobody thought to write down. The fuzzer
+found a real `reclaim` bug on its first run that none of the cases here would have caught,
+because it only appears when reclaiming from a node that had itself delegated onward.
 
 Mandatory before touching the CLI or SDK (docs/BUILD_PLAN.md §8). A bug here is, per the
 build plan, a total-loss bug — treat this directory as gating, not optional.
