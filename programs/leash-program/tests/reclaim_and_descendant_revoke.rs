@@ -231,6 +231,83 @@ fn reclaim_works_on_an_expired_child_without_revoking() {
     assert_conserved(&svm, &parent);
 }
 
+/// Reclaiming from a middle node — one that has delegated onward itself — must not break
+/// conservation on that node.
+///
+/// Regression for a bug `fuzz_conservation.rs` found (seed 1, step 31). `reclaim`
+/// originally released `cap - spent` and wrote `cap` down to `spent`, which ignored budget
+/// the child had already committed to *its* children: the middle node ended up with
+/// `cap = 0` while still holding `committed_to_children = 97`, so the invariant read
+/// `0 + 97 <= 0`. Nothing could be overspent — the grandchild's spends die on the ancestor
+/// walk — but the number the program advertises and computes with was false.
+///
+/// The fix releases only the free portion, leaving `cap == spent + committed_to_children`,
+/// and makes deep recovery a bottom-up walk: reclaim the grandchild first, then the child.
+#[test]
+fn reclaiming_from_a_middle_node_preserves_conservation() {
+    let mut svm = LiteSVM::new();
+    let s = setup(&mut svm);
+    let dest = merchant_ata(&mut svm, &s);
+
+    let root_owner = Keypair::new();
+    expect_ok(issue(&mut svm, &s, &root_owner, 0, 1_000, FAR_FUTURE, vec![dest]));
+    let (root, root_ta) = capability_for(&root_owner.pubkey(), 0);
+
+    // root -> mid(500) -> leaf(97)
+    let mid_owner = Keypair::new();
+    expect_ok(attenuate(&mut svm, &s, &root_owner, root, &mid_owner, 0, 500, FAR_FUTURE, vec![dest]));
+    let (mid, _) = capability_for(&mid_owner.pubkey(), 0);
+
+    let leaf_owner = Keypair::new();
+    expect_ok(attenuate(&mut svm, &s, &mid_owner, mid, &leaf_owner, 0, 97, FAR_FUTURE, vec![dest]));
+    let (leaf, leaf_ta) = capability_for(&leaf_owner.pubkey(), 0);
+    assert_eq!(capability_state(&svm, &mid).committed_to_children, 97);
+
+    // The root cuts off the whole mid subtree and reclaims.
+    expect_ok(revoke_descendant(&mut svm, &s, &root_owner, root, mid));
+    expect_ok(reclaim(&mut svm, &s, &root_owner, root, mid));
+
+    // The invariant must still hold on `mid`, which is what regressed.
+    let m = capability_state(&svm, &mid);
+    assert!(
+        m.spent + m.committed_to_children <= m.cap,
+        "conservation violated on the middle node: spent={} committed={} cap={}",
+        m.spent, m.committed_to_children, m.cap,
+    );
+    // Only mid's free 403 came back; the 97 under the leaf stays reserved for now.
+    assert_eq!(m.cap, 97);
+    assert_eq!(m.committed_to_children, 97);
+    assert_eq!(capability_state(&svm, &root).committed_to_children, 97);
+
+    // The leaf cannot spend — its ancestor is revoked — so nothing was over-released.
+    expect_err_code(
+        spend(&mut svm, &s, &leaf_owner, &leaf_ta, &dest, 1),
+        "leaf spending under a revoked middle node",
+        E_HOOK_PARENT_REVOKED,
+    );
+
+    // Bottom-up recovery. Note the leaf must be revoked *in its own right* first:
+    // `reclaim` checks the child's own `revoked`/`expiry`, and revoking an ancestor stops
+    // a capability spending without setting its own flag. So "dead because an ancestor
+    // died" is not something `reclaim` infers — it would need the ancestor chain passed
+    // in to do so. Each level therefore costs an explicit revoke, which is more calls but
+    // never guesses that a live capability is finished with.
+    expect_err_code(
+        reclaim(&mut svm, &s, &mid_owner, mid, leaf),
+        "reclaiming a leaf that is unspendable but not itself revoked",
+        E_LEASH_CHILD_STILL_LIVE,
+    );
+    expect_ok(revoke_descendant(&mut svm, &s, &mid_owner, mid, leaf));
+    expect_ok(reclaim(&mut svm, &s, &mid_owner, mid, leaf));
+    assert_eq!(capability_state(&svm, &mid).committed_to_children, 0);
+    expect_ok(reclaim(&mut svm, &s, &root_owner, root, mid));
+    assert_eq!(capability_state(&svm, &root).committed_to_children, 0);
+
+    // And the root's full deposit is spendable again.
+    expect_ok(spend(&mut svm, &s, &root_owner, &root_ta, &dest, 1_000));
+    assert_conserved(&svm, &root);
+}
+
 /// Authority: only a real ancestor may revoke, and only the immediate parent may reclaim.
 #[test]
 fn authority_is_checked_on_both_instructions() {

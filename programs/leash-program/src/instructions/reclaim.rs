@@ -68,19 +68,34 @@ pub fn reclaim_handler(ctx: Context<Reclaim>) -> Result<()> {
     let dead = child.revoked || now > child.expiry;
     require!(dead, LeashError::ChildStillLive);
 
-    // Release only what the child cannot still spend. It may have spent some of its
-    // budget before dying, and those units are really gone — they left through a
-    // hook-checked transfer and a merchant can redeem them against the vault.
+    // Release only the child's *free* budget — not everything it hasn't spent.
+    //
+    // Subtracting `committed_to_children` as well is load-bearing, and its absence was a
+    // real bug caught by `fuzz_conservation.rs` (seed 1, step 31). Releasing `cap - spent`
+    // and writing `cap` down to `spent` breaks the invariant on any child that is itself a
+    // parent: a middle node holding `committed_to_children = 97` ended up with `cap = 0`,
+    // so `spent + committed_to_children <= cap` read `0 + 97 <= 0`. No funds were at risk
+    // — the grandchildren could not spend, since the hook's ancestor walk sees their dead
+    // parent — but the invariant `state.rs` advertises was false, and the arithmetic that
+    // depends on it was operating on nonsense.
+    //
+    // Releasing the free portion instead leaves `cap == spent + committed_to_children`,
+    // so the invariant holds with equality. Budget sitting under a grandchild is recovered
+    // by reclaiming **bottom-up**: reclaim the grandchild into this child first, which
+    // frees it here, then call this again. That is also why calling twice must stay safe.
     let unspent = child
         .cap
         .checked_sub(child.spent)
+        .and_then(|v| v.checked_sub(child.committed_to_children))
         .ok_or(LeashError::CapExceeded)?;
 
-    // Writing `cap` down to `spent` is what makes this safe to call twice: a second call
-    // computes `unspent == 0` and decrements by nothing. Doing it via the same subtraction
-    // the parent's decrement uses keeps the two numbers moving together, which is the
-    // property 0.2 turns on.
-    child.cap = child.spent;
+    // Idempotence: a second call computes `unspent == 0` and changes nothing. Deriving the
+    // write-down from the same quantity as the parent's decrement keeps the two numbers
+    // moving together, which is the property 0.2 turns on.
+    child.cap = child
+        .cap
+        .checked_sub(unspent)
+        .ok_or(LeashError::CapExceeded)?;
 
     let parent = &mut ctx.accounts.parent_capability;
     parent.committed_to_children = parent
