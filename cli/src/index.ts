@@ -7,6 +7,7 @@ import {
   fetchCapability,
   loadPrograms,
   mint,
+  redeemableSupply,
   redeem as redeemCapability,
   reclaim as reclaimBudget,
   revoke as revokeCapability,
@@ -319,6 +320,33 @@ program
       console.log(`  ${f.address.toBase58()}  ${nonce}`);
       console.log(`    ${formatSnapshot(f.state)}`);
       console.log(`    token account: ${f.state.tokenAccount.toBase58()}`);
+    }
+  });
+
+program
+  .command("supply")
+  .description(
+    "Split the wrapped mint's supply into redeemable and stranded. Compare the vault " +
+      "against the redeemable figure, not the raw supply.",
+  )
+  .action(async () => {
+    const { url, keypair } = opts();
+    const provider = loadProvider(url, keypair);
+    const programs = loadPrograms(provider);
+    const deployment = loadDeployment();
+
+    const r = await redeemableSupply(programs, deployment.wrappedMint);
+    console.log(`  total supply    : ${r.totalSupply}   (not a solvency figure)`);
+    console.log(`  merchant-held   : ${r.merchantHeld}`);
+    console.log(`  capability claim: ${r.capabilityClaims}`);
+    console.log(`  claimable       : ${r.claimable}   <- compare the vault against this`);
+    console.log(`  unbacked        : ${r.unbacked}   (${r.stranded} of it stranded in dead capabilities,`);
+    console.log(`                     the rest is live delegations double-counting by design)`);
+    if (r.strandedCapabilities.length > 0) {
+      console.log("  stranded in:");
+      for (const c of r.strandedCapabilities) {
+        console.log(`    ${c.address.toBase58()}  ${c.amount}  (${c.reason})`);
+      }
     }
   });
 
