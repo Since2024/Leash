@@ -1,8 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token_2022::{self as token_2022, Burn};
+use anchor_spl::token::{self, Token, TokenAccount as SplTokenAccount, Transfer};
+use anchor_spl::token_2022::{self as token_2022, Burn, Token2022};
 
-use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED};
+use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED, VAULT_SEED};
 use crate::error::LeashError;
 use crate::state::Capability;
 
@@ -63,13 +63,37 @@ pub struct Redeem<'info> {
     )]
     pub capability: UncheckedAccount<'info>,
 
-    /// CHECK: leash-wrapped-USD mint. Mutable because burning reduces supply.
+    /// CHECK: leash-wrapped-USD mint. Mutable because burning reduces supply. Not typed,
+    /// because it needs no field read — what makes it trustworthy is that the vault below
+    /// is derived from it, so naming a counterfeit mint here names a vault that is not the
+    /// real one.
     #[account(mut)]
     pub wrapped_mint: UncheckedAccount<'info>,
 
-    /// CHECK: program vault (legacy SPL Token, real USDC) — source of the withdrawal.
-    #[account(mut)]
-    pub vault: UncheckedAccount<'info>,
+    /// Program vault (legacy SPL Token, real USDC) — source of the withdrawal, and the
+    /// account docs/ROADMAP.md 0.11 was about.
+    ///
+    /// This was a bare `UncheckedAccount`, and the combination with an unchecked
+    /// `wrapped_mint` was the worst hole in the program: the burn took whatever mint the
+    /// caller named and the payout came from whatever vault the caller named, with
+    /// nothing requiring the two to be related. Burn a Token-2022 mint you created
+    /// yourself, name the real vault, and the program pays you out of a stranger's
+    /// deposit — one instruction, no capability, no prior state. `tests/deployment_binding.rs`
+    /// demonstrates it against the real binary.
+    ///
+    /// `program_authority`'s own `seeds` constraint does not help, and the reason is the
+    /// instructive part: it proves the *signer* is canonical, not which account that
+    /// signer is being made to pay out of. It is seeded `[AUTHORITY_SEED]` with no mint in
+    /// the seeds, so one PDA is the authority for every vault the program will ever have.
+    ///
+    /// Deriving the vault from `wrapped_mint` is what ties them together: the seeds that
+    /// say which mint say which vault.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED.as_bytes(), wrapped_mint.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, SplTokenAccount>,
 
     /// CHECK: PDA authority over the vault. Same PDA `issue` uses as mint authority —
     /// one shared authority for the deployment (see constants::AUTHORITY_SEED).
@@ -80,10 +104,10 @@ pub struct Redeem<'info> {
     #[account(mut)]
     pub holder_deposit_account: UncheckedAccount<'info>,
 
-    /// CHECK: legacy SPL Token program, for the vault withdrawal.
-    pub token_program: UncheckedAccount<'info>,
-    /// CHECK: Token-2022 program, for the burn.
-    pub token_2022_program: UncheckedAccount<'info>,
+    /// Typed for the same reason as in `issue`: these are CPI targets, and an unchecked
+    /// account that gets invoked is the same bug class as an unchecked vault.
+    pub token_program: Program<'info, Token>,
+    pub token_2022_program: Program<'info, Token2022>,
 }
 
 pub fn redeem_handler(ctx: Context<Redeem>, amount: u64) -> Result<()> {

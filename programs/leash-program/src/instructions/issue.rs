@@ -1,9 +1,11 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Transfer};
-use anchor_spl::token_2022::{self as token_2022, MintTo};
+use anchor_spl::token::{self, Token, TokenAccount as SplTokenAccount, Transfer};
+use anchor_spl::token_2022::{self as token_2022, MintTo, Token2022};
 use anchor_spl::token_interface::{Mint, TokenAccount};
 
-use crate::constants::{AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN, TOKEN_ACCOUNT_SEED};
+use crate::constants::{
+    AUTHORITY_SEED, CAPABILITY_SEED, MAX_ALLOWLIST_LEN, TOKEN_ACCOUNT_SEED, VAULT_SEED,
+};
 use crate::error::LeashError;
 use crate::state::Capability;
 
@@ -12,9 +14,12 @@ use crate::state::Capability;
 /// revoked = false), plus `cap` units of leash-wrapped-USD minted to a fresh token
 /// account they hold directly.
 ///
-/// See BUILD_PLAN.md §4 "issue" and §5 D1/D3. The vault and `wrapped_mint` are created
-/// once, off-chain/client-side (exactly as in the Week 1 spike test) — this instruction
-/// operates against an already-configured deployment, it doesn't set one up.
+/// See BUILD_PLAN.md §4 "issue" and §5 D1/D3. This instruction operates against an
+/// already-configured deployment; it doesn't set one up. `wrapped_mint` is still created
+/// client-side, but the **vault is not** — it is a PDA at `[VAULT_SEED, wrapped_mint]`
+/// created by `initialize_vault`. That changed with docs/ROADMAP.md 0.11: a
+/// client-created vault is one the caller can substitute, and substituting it was worth
+/// the entire deposit.
 #[derive(Accounts)]
 #[instruction(nonce: u64, cap: u64, expiry: i64, allowlist: Vec<Pubkey>)]
 pub struct Issue<'info> {
@@ -25,16 +30,32 @@ pub struct Issue<'info> {
     #[account(mut)]
     pub principal_deposit_account: UncheckedAccount<'info>,
 
-    /// CHECK: the program's vault (legacy SPL Token account), created once at deployment
-    /// time. Its authority is `program_authority` below.
-    #[account(mut)]
-    pub vault: UncheckedAccount<'info>,
-
     /// leash-wrapped-USD mint (Token-2022, TransferHook extension already configured at
     /// deployment time). Mutable because minting increases supply. Typed rather than
     /// unchecked so Anchor can read its extensions to size the token account below.
+    ///
+    /// Declared *before* `vault` because the vault's seeds reference it, and Anchor
+    /// resolves fields in declaration order. That ordering is the fix for
+    /// docs/ROADMAP.md 0.11 — see the vault below.
     #[account(mut)]
     pub wrapped_mint: InterfaceAccount<'info, Mint>,
+
+    /// The program's vault: the legacy SPL Token account holding the real deposited
+    /// asset, created once per wrapped mint by `initialize_vault`.
+    ///
+    /// The `seeds` constraint is load-bearing and was absent (docs/ROADMAP.md 0.11). As a
+    /// bare `UncheckedAccount` this took whatever vault the caller named, so a caller
+    /// could deposit into an account they owned and still be minted genuine wrapped units
+    /// against the real mint — a fully-backed-looking capability with nothing behind it,
+    /// redeemable from the real vault by the ordinary path. Deriving the vault from
+    /// `wrapped_mint` makes the deposit and the mint provably part of the same
+    /// deployment.
+    #[account(
+        mut,
+        seeds = [VAULT_SEED.as_bytes(), wrapped_mint.key().as_ref()],
+        bump,
+    )]
+    pub vault: Account<'info, SplTokenAccount>,
 
     /// CHECK: PDA that is the wrapped mint's mint authority. Not read, only signs.
     #[account(seeds = [AUTHORITY_SEED.as_bytes()], bump)]
@@ -73,10 +94,13 @@ pub struct Issue<'info> {
     )]
     pub capability: Account<'info, Capability>,
 
-    /// CHECK: legacy SPL Token program, for the deposit transfer.
-    pub token_program: UncheckedAccount<'info>,
-    /// CHECK: Token-2022 program, for minting wrapped units.
-    pub token_2022_program: UncheckedAccount<'info>,
+    /// Typed rather than unchecked: both of these are CPI targets, and an unchecked
+    /// account that gets invoked is the same bug class as an unchecked vault. The
+    /// instruction builders in `spl-token`/`spl-token-2022` happen to reject a foreign
+    /// program id themselves, so this is belt-and-braces — but it makes the requirement
+    /// visible at the account list instead of buried in a dependency's internals.
+    pub token_program: Program<'info, Token>,
+    pub token_2022_program: Program<'info, Token2022>,
     pub system_program: Program<'info, System>,
 }
 

@@ -166,32 +166,6 @@ pub fn setup(svm: &mut LiteSVM) -> Setup {
     )
     .unwrap();
 
-    // Vault (legacy SPL Token account, owned by program_authority).
-    let vault = Keypair::new();
-    let vault_rent = svm.minimum_balance_for_rent_exemption(spl_token::state::Account::LEN);
-    send(
-        svm,
-        &payer,
-        &[&vault],
-        &[
-            anchor_lang::solana_program::system_instruction::create_account(
-                &payer.pubkey(),
-                &vault.pubkey(),
-                vault_rent,
-                spl_token::state::Account::LEN as u64,
-                &spl_token::id(),
-            ),
-            spl_token::instruction::initialize_account3(
-                &spl_token::id(),
-                &vault.pubkey(),
-                &usdc_mint.pubkey(),
-                &program_authority,
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
-
     // Wrapped mint (Token-2022, TransferHook -> leash-hook).
     let wrapped_mint = Keypair::new();
     let extensions = [spl_token_2022::extension::ExtensionType::TransferHook];
@@ -231,6 +205,29 @@ pub fn setup(svm: &mut LiteSVM) -> Setup {
     )
     .unwrap();
 
+    // Vault: a PDA of the wrapped mint (docs/ROADMAP.md 0.11), created by the program
+    // rather than client-side. The derivation is the whole point — it makes this the only
+    // account `issue`/`redeem` will accept as the deployment's vault. The previous
+    // client-generated keypair could simply be swapped for another one at call time, which
+    // is what `deployment_binding.rs` exploits against the old scheme.
+    let (vault, _) =
+        Pubkey::find_program_address(&[b"vault", wrapped_mint.pubkey().as_ref()], &PROGRAM_ID);
+    let init_vault_ix = anchor_lang::solana_program::instruction::Instruction {
+        program_id: PROGRAM_ID,
+        accounts: leash_program::accounts::InitializeVault {
+            payer: payer.pubkey(),
+            wrapped_mint: wrapped_mint.pubkey(),
+            deposit_mint: usdc_mint.pubkey(),
+            program_authority,
+            vault,
+            token_program: spl_token::id(),
+            system_program: anchor_lang::solana_program::system_program::ID,
+        }
+        .to_account_metas(None),
+        data: leash_program::instruction::InitializeVault {}.data(),
+    };
+    send(svm, &payer, &[], &[init_vault_ix]).unwrap();
+
     // Register the real extra-account-meta list on leash-hook.
     let (extra_account_meta_list, _) =
         Pubkey::find_program_address(&[b"extra-account-metas", wrapped_mint.pubkey().as_ref()], &HOOK_ID);
@@ -253,7 +250,7 @@ pub fn setup(svm: &mut LiteSVM) -> Setup {
         usdc_mint: usdc_mint.pubkey(),
         usdc_mint_authority,
         wrapped_mint: wrapped_mint.pubkey(),
-        vault: vault.pubkey(),
+        vault,
     }
 }
 

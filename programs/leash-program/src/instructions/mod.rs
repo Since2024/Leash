@@ -1,3 +1,4 @@
+pub mod initialize_vault;
 pub mod issue;
 pub mod attenuate;
 pub mod revoke;
@@ -10,6 +11,7 @@ pub mod record_spend;
 // hidden `__client_accounts_*` modules that the #[program] macro in lib.rs expects to
 // find via `instructions::*`. Each module's handler function has a unique name
 // (issue_handler, attenuate_handler, ...) specifically so this glob has no ambiguity.
+pub use initialize_vault::*;
 pub use issue::*;
 pub use attenuate::*;
 pub use revoke::*;

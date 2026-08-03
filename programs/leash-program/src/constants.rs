@@ -23,6 +23,15 @@ pub const CAPABILITY_SEED: &str = "capability";
 #[constant]
 pub const TOKEN_ACCOUNT_SEED: &str = "capability-token";
 
+/// Seeds the vault holding a deployment's real deposited asset:
+/// `[VAULT_SEED, wrapped_mint]`. One vault per wrapped mint, created by
+/// `initialize_vault`.
+///
+/// This constant existed unused for most of the project's life, and that was the bug
+/// (docs/ROADMAP.md 0.11): the vault was a client-generated keypair account, so no
+/// derivation tied it to anything and `issue`/`redeem` accepted whichever one the caller
+/// passed. Keying it on the wrapped mint is what makes "which vault backs this mint" a
+/// question the program can answer for itself instead of taking on trust.
 #[constant]
 pub const VAULT_SEED: &str = "vault";
 

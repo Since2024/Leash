@@ -21,6 +21,13 @@ declare_id!("Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk");
 pub mod leash_program {
     use super::*;
 
+    /// Creates the single vault backing `wrapped_mint`, at `[VAULT_SEED, wrapped_mint]`.
+    /// Must be called once per deployment, in the same transaction that creates the mint —
+    /// see initialize_vault.rs. docs/ROADMAP.md 0.11.
+    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+        instructions::initialize_vault::initialize_vault_handler(ctx)
+    }
+
     /// `nonce` distinguishes this capability's token account from any other the same
     /// principal holds, and so distinguishes the capability itself — see
     /// constants::CAPABILITY_SEED. Callers who don't care may pass any value they
