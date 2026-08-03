@@ -6,6 +6,8 @@
 export const CAPABILITY_SEED = Buffer.from("capability");
 export const TOKEN_ACCOUNT_SEED = Buffer.from("capability-token");
 export const AUTHORITY_SEED = Buffer.from("authority");
+/** `[VAULT_SEED, wrappedMint]` — one vault per wrapped mint (docs/ROADMAP.md 0.11). */
+export const VAULT_SEED = Buffer.from("vault");
 export const HOOK_AUTHORITY_SEED = Buffer.from("hook-authority");
 export const EXTRA_ACCOUNT_METAS_SEED = Buffer.from("extra-account-metas");
 

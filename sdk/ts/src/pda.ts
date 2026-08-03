@@ -5,6 +5,7 @@ import {
   EXTRA_ACCOUNT_METAS_SEED,
   HOOK_AUTHORITY_SEED,
   TOKEN_ACCOUNT_SEED,
+  VAULT_SEED,
 } from "./constants";
 
 /** Encodes a nonce the way the on-chain seeds do: little-endian `u64`. */
@@ -67,6 +68,23 @@ export function randomNonce(): bigint {
  * token-account authority. */
 export function programAuthorityPda(programId: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([AUTHORITY_SEED], programId)[0];
+}
+
+/** The vault backing a given wrapped mint, at `[VAULT_SEED, wrappedMint]`.
+ *
+ * The vault used to be a client-generated keypair account, which meant nothing on-chain
+ * could tell the real one from a substitute — `issue` would deposit into any account you
+ * named and `redeem` would pay out of any account you named, so burning a mint you
+ * created yourself drained a stranger's deposit (docs/ROADMAP.md 0.11). Deriving it from
+ * the wrapped mint is what makes the pair checkable. */
+export function vaultPda(
+  wrappedMint: PublicKey,
+  programId: PublicKey,
+): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [VAULT_SEED, wrappedMint.toBuffer()],
+    programId,
+  )[0];
 }
 
 /** leash-hook's own signing PDA, used as the CPI-caller proof-of-identity in

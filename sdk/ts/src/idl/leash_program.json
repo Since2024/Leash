@@ -177,6 +177,105 @@
       ]
     },
     {
+      "name": "initialize_vault",
+      "docs": [
+        "Creates the single vault backing `wrapped_mint`, at `[VAULT_SEED, wrapped_mint]`.",
+        "Must be called once per deployment, in the same transaction that creates the mint —",
+        "see initialize_vault.rs. docs/ROADMAP.md 0.11."
+      ],
+      "discriminator": [
+        48,
+        191,
+        163,
+        44,
+        71,
+        129,
+        63,
+        164
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "wrapped_mint",
+          "docs": [
+            "The Token-2022 wrapped mint this vault backs. Required to be a mint whose mint",
+            "authority is this program's `program_authority` PDA — that is what makes it a real",
+            "leash wrapped mint rather than an arbitrary token, and it keeps the set of vaults",
+            "that can ever exist tied to actual deployments."
+          ]
+        },
+        {
+          "name": "deposit_mint",
+          "docs": [
+            "The real deposited asset (legacy SPL Token), e.g. USDC."
+          ]
+        },
+        {
+          "name": "program_authority",
+          "docs": [
+            "read."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "`init` here is what makes the address canonical: exactly one vault can ever exist",
+            "per wrapped mint, and a second call fails on the account already being in use."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wrapped_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "issue",
       "docs": [
         "`nonce` distinguishes this capability's token account from any other the same",
@@ -205,20 +304,51 @@
           "writable": true
         },
         {
-          "name": "vault",
-          "docs": [
-            "time. Its authority is `program_authority` below."
-          ],
-          "writable": true
-        },
-        {
           "name": "wrapped_mint",
           "docs": [
             "leash-wrapped-USD mint (Token-2022, TransferHook extension already configured at",
             "deployment time). Mutable because minting increases supply. Typed rather than",
-            "unchecked so Anchor can read its extensions to size the token account below."
+            "unchecked so Anchor can read its extensions to size the token account below.",
+            "",
+            "Declared *before* `vault` because the vault's seeds reference it, and Anchor",
+            "resolves fields in declaration order. That ordering is the fix for",
+            "docs/ROADMAP.md 0.11 — see the vault below."
           ],
           "writable": true
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "The program's vault: the legacy SPL Token account holding the real deposited",
+            "asset, created once per wrapped mint by `initialize_vault`.",
+            "",
+            "The `seeds` constraint is load-bearing and was absent (docs/ROADMAP.md 0.11). As a",
+            "bare `UncheckedAccount` this took whatever vault the caller named, so a caller",
+            "could deposit into an account they owned and still be minted genuine wrapped units",
+            "against the real mint — a fully-backed-looking capability with nothing behind it,",
+            "redeemable from the real vault by the ordinary path. Deriving the vault from",
+            "`wrapped_mint` makes the deposit and the mint provably part of the same",
+            "deployment."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wrapped_mint"
+              }
+            ]
+          }
         },
         {
           "name": "program_authority",
@@ -321,10 +451,19 @@
           }
         },
         {
-          "name": "token_program"
+          "name": "token_program",
+          "docs": [
+            "Typed rather than unchecked: both of these are CPI targets, and an unchecked",
+            "account that gets invoked is the same bug class as an unchecked vault. The",
+            "instruction builders in `spl-token`/`spl-token-2022` happen to reject a foreign",
+            "program id themselves, so this is belt-and-braces — but it makes the requirement",
+            "visible at the account list instead of buried in a dependency's internals."
+          ],
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         },
         {
-          "name": "token_2022_program"
+          "name": "token_2022_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
         },
         {
           "name": "system_program",
@@ -495,11 +634,54 @@
         },
         {
           "name": "wrapped_mint",
+          "docs": [
+            "because it needs no field read — what makes it trustworthy is that the vault below",
+            "is derived from it, so naming a counterfeit mint here names a vault that is not the",
+            "real one."
+          ],
           "writable": true
         },
         {
           "name": "vault",
-          "writable": true
+          "docs": [
+            "Program vault (legacy SPL Token, real USDC) — source of the withdrawal, and the",
+            "account docs/ROADMAP.md 0.11 was about.",
+            "",
+            "This was a bare `UncheckedAccount`, and the combination with an unchecked",
+            "`wrapped_mint` was the worst hole in the program: the burn took whatever mint the",
+            "caller named and the payout came from whatever vault the caller named, with",
+            "nothing requiring the two to be related. Burn a Token-2022 mint you created",
+            "yourself, name the real vault, and the program pays you out of a stranger's",
+            "deposit — one instruction, no capability, no prior state. `tests/deployment_binding.rs`",
+            "demonstrates it against the real binary.",
+            "",
+            "`program_authority`'s own `seeds` constraint does not help, and the reason is the",
+            "instructive part: it proves the *signer* is canonical, not which account that",
+            "signer is being made to pay out of. It is seeded `[AUTHORITY_SEED]` with no mint in",
+            "the seeds, so one PDA is the authority for every vault the program will ever have.",
+            "",
+            "Deriving the vault from `wrapped_mint` is what ties them together: the seeds that",
+            "say which mint say which vault."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "wrapped_mint"
+              }
+            ]
+          }
         },
         {
           "name": "program_authority",
@@ -530,10 +712,16 @@
           "writable": true
         },
         {
-          "name": "token_program"
+          "name": "token_program",
+          "docs": [
+            "Typed for the same reason as in `issue`: these are CPI targets, and an unchecked",
+            "account that gets invoked is the same bug class as an unchecked vault."
+          ],
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         },
         {
-          "name": "token_2022_program"
+          "name": "token_2022_program",
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
         }
       ],
       "args": [
@@ -860,6 +1048,17 @@
     },
     {
       "name": "VAULT_SEED",
+      "docs": [
+        "Seeds the vault holding a deployment's real deposited asset:",
+        "`[VAULT_SEED, wrapped_mint]`. One vault per wrapped mint, created by",
+        "`initialize_vault`.",
+        "",
+        "This constant existed unused for most of the project's life, and that was the bug",
+        "(docs/ROADMAP.md 0.11): the vault was a client-generated keypair account, so no",
+        "derivation tied it to anything and `issue`/`redeem` accepted whichever one the caller",
+        "passed. Keying it on the wrapped mint is what makes \"which vault backs this mint\" a",
+        "question the program can answer for itself instead of taking on trust."
+      ],
       "type": "string",
       "value": "\"vault\""
     }

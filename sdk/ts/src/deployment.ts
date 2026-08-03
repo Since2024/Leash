@@ -2,7 +2,6 @@ import {
   ExtensionType,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
-  createInitializeAccount3Instruction,
   createInitializeMint2Instruction,
   createInitializeTransferHookInstruction,
   getMintLen,
@@ -14,7 +13,7 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { extraAccountMetaListPda, programAuthorityPda } from "./pda";
+import { extraAccountMetaListPda, programAuthorityPda, vaultPda } from "./pda";
 import type { LeashPrograms } from "./programs";
 
 /** `connection.sendTransaction` does not set `feePayer`/`recentBlockhash` for you —
@@ -64,32 +63,32 @@ export async function createDeployment(
   const { connection, leashProgramId, leashHookId } = programs;
   const programAuthority = programAuthorityPda(leashProgramId);
 
-  // --- Vault: legacy SPL Token account, owned by program_authority. ---
-  const vaultKeypair = Keypair.generate();
-  const vaultSpace = 165; // legacy SPL Token Account::LEN
-  const vaultRent = await connection.getMinimumBalanceForRentExemption(vaultSpace);
-
-  const vaultTx = new Transaction().add(
-    SystemProgram.createAccount({
-      fromPubkey: payer.publicKey,
-      newAccountPubkey: vaultKeypair.publicKey,
-      lamports: vaultRent,
-      space: vaultSpace,
-      programId: TOKEN_PROGRAM_ID,
-    }),
-    createInitializeAccount3Instruction(
-      vaultKeypair.publicKey,
-      depositAssetMint,
-      programAuthority,
-      TOKEN_PROGRAM_ID,
-    ),
-  );
-  await sendAndConfirm(connection, vaultTx, payer.publicKey, [payer, vaultKeypair]);
-
-  // --- Wrapped mint: Token-2022, TransferHook -> leash-hook. ---
+  // --- Wrapped mint (Token-2022, TransferHook -> leash-hook) and its vault. ---
+  //
+  // These are created in ONE transaction, and that is a correctness requirement rather
+  // than an optimization. The vault is a PDA of the wrapped mint (docs/ROADMAP.md 0.11)
+  // and `initializeVault` is permissionless, so whoever calls it first for a given mint
+  // chooses which asset that mint is backed by. Creating the mint and claiming its vault
+  // atomically means there is never a moment when the mint's address is public and its
+  // vault does not yet exist — which is what removes the race, since the address is
+  // otherwise unguessable until the keypair is used.
   const wrappedMintKeypair = Keypair.generate();
   const wrappedMintSpace = getMintLen([ExtensionType.TransferHook]);
   const wrappedMintRent = await connection.getMinimumBalanceForRentExemption(wrappedMintSpace);
+  const vault = vaultPda(wrappedMintKeypair.publicKey, leashProgramId);
+
+  const initVaultIx = await programs.leashProgram.methods
+    .initializeVault()
+    .accounts({
+      payer: payer.publicKey,
+      wrappedMint: wrappedMintKeypair.publicKey,
+      depositMint: depositAssetMint,
+      programAuthority,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    } as never)
+    .instruction();
 
   const mintTx = new Transaction().add(
     SystemProgram.createAccount({
@@ -112,6 +111,7 @@ export async function createDeployment(
       null,
       TOKEN_2022_PROGRAM_ID,
     ),
+    initVaultIx,
   );
   await sendAndConfirm(connection, mintTx, payer.publicKey, [payer, wrappedMintKeypair]);
 
@@ -131,7 +131,7 @@ export async function createDeployment(
   return {
     depositAssetMint,
     wrappedMint: wrappedMintKeypair.publicKey,
-    vault: vaultKeypair.publicKey,
+    vault,
     programAuthority,
   };
 }

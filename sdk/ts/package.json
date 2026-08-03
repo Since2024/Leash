@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "generate-idl": "cd ../../.. && anchor build --idl target/idl --idl-ts target/types && cp target/idl/leash_program.json target/idl/leash_hook.json sdk/ts/src/idl/ && cp target/types/leash_program.ts target/types/leash_hook.ts sdk/ts/src/idl/"
+    "generate-idl": "cd ../.. && anchor build && cp target/idl/leash_program.json target/idl/leash_hook.json sdk/ts/src/idl/ && cp target/types/leash_program.ts target/types/leash_hook.ts sdk/ts/src/idl/"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.32.1",
