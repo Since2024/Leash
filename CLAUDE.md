@@ -61,6 +61,26 @@ enforcement** — cap, expiry, allowlist, revoked, and the entire ancestor chain
   authority for every vault the program will ever have. The vault is now a PDA at
   `[VAULT_SEED, wrapped_mint]` created by `initialize_vault`. Verified to fail without the
   fix.
+- `hook_account_substitution.rs` — post-MVP: proves the hook's *positional* trust in its
+  extra accounts is safe. `spend_logic` reads ancestors as `accounts[7..9]` and validates
+  them against nothing, so swapping a live capability into a revoked parent's slot would
+  defeat revocation for every delegated capability. It is rejected — but by **Token-2022**,
+  which calls `ExtraAccountMetaList::check_account_infos` before invoking the hook, not by
+  anything in this repo. Kept as a regression test because that guarantee is inherited from
+  a dependency: nothing here would notice if it were relaxed, or if the registered account
+  layout drifted from what `spend_logic` indexes.
+- `mint_binding.rs` — post-MVP: proves a capability can only mint and spend units of the
+  mint it was issued against (docs/ROADMAP.md 0.12, **critical**). `program_authority` is
+  seeded `[AUTHORITY_SEED]` alone, so it is the mint authority for *every* deployment —
+  and `Capability` recorded no mint, so `attenuate` would mint children of whichever mint
+  it was handed. An attacker stood up their own worthless deployment (anyone may name an
+  arbitrary pubkey as a mint authority — no signature required), issued a capability
+  against it, then attenuated a child against the **real** mint and spent it. Demonstrated
+  end to end: deposited 1_000 units of a self-minted token, withdrew 1_000 real USDC,
+  victim's vault 1_000 → 0. `Capability.wrapped_mint` now exists and `attenuate`/`redeem`/
+  the hook all check it. **The field sits after `token_account` deliberately** — leash-hook
+  reads `parent`/`ancestors` at fixed byte offsets, so inserting before them silently
+  repoints ancestor resolution.
 - `multi_capability.rs` — post-MVP: proves one owner can hold **many** capabilities, and
   that they stay independent (budget, spending, revocation). Capabilities used to be
   keyed `[CAPABILITY_SEED, owner]`, so a second `issue`/`attenuate` for the same owner
@@ -226,6 +246,8 @@ leash/
       redeem_authorization.rs
       multi_capability.rs
       deployment_binding.rs
+      mint_binding.rs
+      hook_account_substitution.rs
       reclaim_and_descendant_revoke.rs
       fuzz_conservation.rs     Randomized instruction sequences (found a real reclaim bug)
   programs/leash-hook/

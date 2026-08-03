@@ -33,19 +33,31 @@ Phase 1 MVP complete: both programs deployed to devnet, full hook enforcement
 end-to-end against a real validator. Nothing on mainnet, and per BUILD_PLAN.md §10 that
 stays true until at minimum Phase 0 and Phase 1 below are closed.
 
-Three of the Phase 0 items below were **critical** — each one, on its own, sufficient to
-lose depositor funds, and all three reachable without any unusual behaviour. All three
-(0.1, 0.2, 0.11) are now fixed, each covered by tests verified to fail without their fix.
-The remaining Phase 0 items are real but none of them lose money on their own.
+Four of the Phase 0 items below were **critical** — each one, on its own, sufficient to
+lose depositor funds, and all four reachable without any unusual behaviour. All four
+(0.1, 0.2, 0.11, 0.12) are now fixed, each covered by tests verified to fail without their
+fix. The remaining Phase 0 items are real but none of them lose money on their own.
 
-0.11 is the worst of the three and was found last, which is worth stating plainly: it let
-**any** caller drain the entire vault in one instruction, needing no capability, no
-deposit and no prior state — and it survived every previous review, the whole Phase 0
-sweep, and a green suite of 32 tests including a solvency fuzzer. It survived them because
-the test helpers always passed the correct vault and mint, so the harness was quietly
-supplying the binding the program was supposed to enforce. The lesson is narrower than
-"test more": a test that constructs its accounts through a helper can only ever exercise
-the wiring that helper believes in.
+**0.11 and 0.12 were both found after Phase 0 was believed closed, and both drained the
+entire vault.** They are the same bug wearing different clothes: an account the program
+used without ever asking whether it belonged with the others it was used alongside. 0.11
+was *which vault* a mint pays out of; 0.12 was *which mint* a capability may create units
+of. In both, the `program_authority` seeds check sits nearby and looks like it covers the
+gap — and does not, because it proves the signer is canonical and never what it is being
+made to sign for. That PDA is seeded `[AUTHORITY_SEED]` alone, so it is the authority for
+every vault and every mint the program will ever have.
+
+Two lessons worth keeping separate:
+
+- **The suite could not have caught 0.11.** The helpers in `tests/common/mod.rs` always
+  passed the correct vault and mint, so the harness was supplying the binding the program
+  was supposed to enforce. A test that builds its accounts through a helper only ever
+  exercises the wiring that helper believes in. This is narrower and more useful than
+  "test more".
+- **0.12 was found only because 0.11 was.** One instance of a bug class is evidence the
+  class is present, not that it has been dealt with. The sweep that followed 0.11 is what
+  turned it up, along with two candidates that proved safe (recorded under 0.12 so they
+  are not re-investigated).
 
 0.3 and 0.4 are now fixed too, together: capabilities are keyed on their own token
 account rather than their owner, so one owner can hold many, and the hook checks the
@@ -57,7 +69,7 @@ capabilities) went from theoretical to live, and is now fixed too, via a
 `getProgramAccounts` helper and a `leash list` command. 0.8 is new, surfaced by 0.3: a
 parent cannot revoke one delegation without cutting off all of them.
 
-**Phase 0 now stands at 0.1 through 0.8, plus 0.10 and 0.11, done.** 0.7 and 0.8 landed together as
+**Phase 0 now stands at 0.1 through 0.8, plus 0.10, 0.11 and 0.12, done.** 0.7 and 0.8 landed together as
 `reclaim` + `revoke_descendant`, which is what finally makes "cut this agent off and take
 the money back" expressible — the loop the pitch in `leash.txt` describes and the code
 could not previously perform. 0.10 is addressed by reporting: `redeemableSupply()` computes the real
@@ -666,6 +678,80 @@ with the attacker's USDC account credited from the real vault.
 **This is a breaking on-chain change** (new instruction, vault address, account order in
 `issue`/`redeem`), on top of the one 0.3 already made. Redeploy, don't upgrade in place.
 
+### 0.12 A capability could mint units of a mint it was never issued against — **critical**
+
+- [x] **Fixed.** A capability backed by a worthless asset could attenuate children of the
+      *real* wrapped mint, and those children spent and redeemed like any other. Found by
+      the systematic sweep that 0.11 prompted; the sweep exists because 0.11 proved the
+      "unconstrained account" class was present in this codebase rather than hypothetical.
+
+`attenuate` mints the child's units signed by `program_authority`, and that PDA is seeded
+`[AUTHORITY_SEED]` — nothing else. **One authority PDA is the mint authority for every
+deployment the program will ever have.** So the mint-authority check, which is what makes
+the `mint_to` succeed, says only "this is a leash mint", never "this is *your* leash
+mint."
+
+Nothing else covered the gap. `Capability` did not record which mint it was issued
+against, and `TOKEN_ACCOUNT_SEED` is `[owner, nonce]` with no mint in it either — so there
+was neither a field nor a derivation to check `attenuate`'s `wrapped_mint` against.
+
+The exploit, every step but one of which is legitimate:
+
+1. Create a Token-2022 mint naming leash's `program_authority` as its mint authority.
+   This needs no cooperation: `initialize_mint2` takes the authority as a plain argument,
+   and nobody signs for being named one. Create a worthless legacy-SPL asset to back it.
+2. `initialize_vault` for that pair and `issue` against it, depositing the worthless
+   asset. Entirely legitimate — 0.11 explicitly permits this as a harmless self-consistent
+   sandbox, and it *is* harmless up to here.
+3. `attenuate` from that capability while naming the **real** wrapped mint. The child
+   receives genuine real-mint units and a genuine `Capability`, honoured by the hook like
+   any other.
+4. Spend to an address on the attacker's own allowlist — they control the whole chain — and
+   redeem by the ordinary merchant path.
+
+Step 3 is the only illegitimate one, and it is a single unchecked account.
+
+**Demonstrated end to end before fixing, not argued.** Against the pre-fix binary: the
+attacker deposited 1_000 units of a token they minted themselves, and withdrew 1_000 real
+USDC. The victim's vault went 1_000 → 0.
+
+**The fix, as landed.** `Capability` now records `wrapped_mint`, and `attenuate` requires
+it to equal the mint being passed. `redeem` checks the same thing (defence in depth —
+Token-2022 would reject the burn anyway on a mint mismatch, but as a token-program error
+that reads like insufficient funds rather than a named one), and leash-hook checks the
+transfer's mint against it on the spend path too.
+
+The field is placed **after `token_account`**, and that placement is load-bearing:
+leash-hook reads `parent` and `ancestors` straight out of raw account bytes at
+`PARENT_FIELD_OFFSET` / `ANCESTORS_FIELD_OFFSET`, so a field inserted before them shifts
+both and repoints the hook's ancestor resolution at whatever now sits there — silently, at
+transfer time, with no compile error. The depth-3 ancestor tests in
+`week4_ancestor_chain_and_fuzz.rs` are what confirm the placement is right.
+
+Covered by `programs/leash-program/tests/mint_binding.rs`, asserting `WrongMint` (6013)
+specifically and, separately, that the real mint's **supply** did not move — an error code
+alone would not say that, and units existing that nothing backs is the entire failure mode.
+
+**Two things checked in the same sweep and found safe**, recorded so they are not
+re-investigated from scratch:
+
+- **leash-hook's `initialize_extra_account_meta_list` is permissionless, and that is
+  fine.** It looked like a front-running risk: register a malicious meta list for a mint
+  during the window between mint creation and the deployer's registration, and you control
+  which accounts every transfer resolves — including the ancestor slots the revocation
+  check walks. It is not exploitable, because the instruction builds `account_metas`
+  *inline with no caller input* (`leash-hook/src/lib.rs`). A front-runner can only write
+  the correct list. Registration being open just means a stranger can do the deployer's
+  work for them.
+- **`TOKEN_ACCOUNT_SEED` contains no mint**, so a capability's token-account address is
+  deployment-independent and one `(owner, nonce)` pair collides across two wrapped mints
+  under the same program. Post-fix this is a **usability limitation, not a hole**: the
+  second `init` simply fails, and capabilities now name their own mint, so nothing is
+  confusable. Worth revisiting only if multi-deployment ever becomes a real use case.
+
+**This is a breaking on-chain change** — the `Capability` layout grew — on top of 0.3's and
+0.11's. Redeploy, don't upgrade in place.
+
 ---
 
 ## Phase 1 — Assurance
@@ -746,15 +832,70 @@ between a credible primitive and an unrecoverable incident.
       the strong form; a second engineer reading the two programs is the minimum. That
       0.1, 0.2, and 0.4 were all found by a first careful outside read is the argument for
       doing this properly.
-- [ ] **A security self-review checklist**, written up with findings and fixes, hunting
+- [x] **A security self-review checklist**, written up with findings and fixes, hunting
       the bug classes that actually break Solana programs: missing signer/owner checks,
       integer overflow, PDA seed collisions, CPI privilege escalation, and — added by
       experience here — invariants asserted in comments but never in code.
+
+      **Done as a systematic pass over both programs**, prompted by 0.11 and 0.12: one
+      instance of a bug class is evidence the class is present, not that it has been dealt
+      with. Findings and non-findings both recorded, because "we looked and it was fine" is
+      only worth anything if it says where it looked.
+
+      Fixed here (neither exploitable, both the same class as 0.11/0.12):
+
+      - `attenuate`'s `token_2022_program` was still an unchecked account being CPI'd into
+        — missed when `issue` and `redeem` were tightened. Now `Program<'info, Token2022>`.
+      - **A revoked capability could still `attenuate`.** Not exploitable — the child
+        inherits a revoked ancestor and can never spend, and the reservation lands on the
+        revoked parent's own counter — but a dead capability could mint fresh units nothing
+        would ever use, inflating supply against an unchanged vault and locking its own
+        budget behind a `revoke_descendant` + `reclaim` round trip. Revocation should mean
+        finished. Covered by `a_revoked_capability_cannot_attenuate`, verified to fail
+        without the check.
+
+      Checked and found sound, with the reason, so it is not re-derived from scratch:
+
+      - **`spend_logic` reads its ancestors positionally and never validates them.** This
+        looked like the most dangerous thing left in either program: swap a live capability
+        into a revoked parent's ancestor slot and the whole revocation guarantee for
+        delegated capabilities evaporates. It is safe, but **not because of anything in
+        this repo** — Token-2022 calls `ExtraAccountMetaList::check_account_infos` before
+        invoking the hook, so a substituted account is rejected upstream with
+        `AccountResolutionError::IncorrectAccount` and `spend_logic` never runs. That was
+        an unstated inherited assumption; it is now a test
+        (`hook_account_substitution.rs`), asserted against the specific upstream error code
+        so that a spend failing for some *other* reason cannot masquerade as the guarantee
+        still holding. Worth keeping precisely because nothing here would notice if a
+        future Token-2022 relaxed it.
+      - **Integer overflow**: every state mutation uses `checked_*`. The two raw
+        expressions are `child.depth = parent_depth + 1` (bounded by the `depth < MAX_DEPTH`
+        check immediately above) and `parent_ancestors[i - 1]` (loop starts at 1).
+      - **Reinitialization**: no `init_if_needed` and no `close` anywhere, so no revival or
+        re-init paths.
+      - **Slice panics**: the hook's `data[8..]` reads are reachable only for accounts the
+        meta list resolved, which exist by construction; `redeem`'s manual deserialize is
+        guarded by a `data_is_empty()` check and Anchor's own discriminator-length check.
+      - **Aliasing**: `reclaim` and `revoke_descendant` both take two `Capability` accounts,
+        but neither can be passed the same account twice — `child.parent == parent_key` and
+        the `ancestors` membership test both fail on self.
+      - **Allowlist drift**: no instruction mutates `allowlist`, so `attenuate`'s
+        subset check at creation holds for the life of the tree. That is why the hook is
+        correct to check only the spending capability's own allowlist and not its
+        ancestors'.
+      - Every remaining `UncheckedAccount` in either program was re-justified individually.
 - [ ] **Hook-failure semantics under adversarial conditions.** Property 6 says spends
       fail *closed* if the enforcing program is unreachable. That's argued from the
       Token-2022 hook mechanism but not tested — e.g. a malformed or truncated
       `ExtraAccountMetaList`, or a capability account that fails to deserialize, should
       reject the transfer rather than skip enforcement.
+
+      **Partially done.** The account-substitution half is now covered by
+      `hook_account_substitution.rs` (see the checklist entry above): supplying a different
+      account than the registered formula resolves is rejected before `spend_logic` runs.
+      Still untested: a malformed or truncated `ExtraAccountMetaList`, a `Capability` that
+      fails to deserialize, and the case the property is really about — the hook program
+      itself being absent or failing to load.
 - [ ] **Upgrade-authority policy.** Both programs are deployed to devnet upgradeable,
       under the same authority as the committed program keypairs (`BUILD_PLAN.md:462`).
       Who holds that authority on mainnet, and whether it's eventually burned or moved to
@@ -892,6 +1033,15 @@ Same standard as the rest of this repo: real transactions against real programs,
 rejection checked against its actual on-chain error code, and an explicit note of what's
 honestly not verified yet rather than a claim that something "looks done."
 
-That standard is currently aspirational in one respect — see 0.5, where the committed
-tests assert only that a call failed. Closing 0.5 is what makes this paragraph true of
-the code as well as of the intent.
+That was aspirational when it was written — 0.5 records the gap, where the committed tests
+asserted only that a call had failed — and closing 0.5 is what made it true of the code as
+well as of the intent.
+
+0.11 and 0.12 add a second clause it did not have: **a rejection test proves only what its
+account list is capable of expressing.** Every rejection in the suite named its specific
+error code, and both bugs still walked straight through, because the accounts were built
+by helpers that always passed the correct vault and mint. Asserting the right code against
+the wrong account list is a green test that checks nothing. New tests for anything
+account-shaped should construct their accounts explicitly, the way
+`deployment_binding.rs` and `mint_binding.rs` do, rather than reaching for `common`'s
+helpers.
