@@ -154,7 +154,15 @@ export type LeashProgram = {
           }
         },
         {
-          "name": "token2022Program"
+          "name": "token2022Program",
+          "docs": [
+            "Typed, like `issue`'s and `redeem`'s. This one was missed when those two were",
+            "tightened (docs/ROADMAP.md 0.11) and is the same bug class: an unchecked account",
+            "that gets CPI'd into. Not independently exploitable — `spl_token_2022`'s own",
+            "instruction builder rejects a foreign program id — but an inconsistency here is",
+            "exactly the kind of thing that reads as \"deliberate\" on the next review."
+          ],
+          "address": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
         },
         {
           "name": "systemProgram",
@@ -884,6 +892,11 @@ export type LeashProgram = {
       "code": 6012,
       "name": "childStillLive",
       "msg": "child is still live; revoke it or wait for expiry before reclaiming"
+    },
+    {
+      "code": 6013,
+      "name": "wrongMint",
+      "msg": "wrapped mint does not match the one this capability was issued against"
     }
   ],
   "types": [
@@ -946,6 +959,25 @@ export type LeashProgram = {
             "name": "tokenAccount",
             "docs": [
               "The Token-2022 token account holding this capability's spendable balance."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "wrappedMint",
+            "docs": [
+              "The wrapped mint this capability was issued against — i.e. which deployment's",
+              "collateral its units are a claim on.",
+              "",
+              "**Placed after `token_account`, and that is load-bearing.** leash-hook reads",
+              "`parent` and `ancestors` straight out of raw account bytes at",
+              "`PARENT_FIELD_OFFSET` / `ANCESTORS_FIELD_OFFSET`; a field inserted before them",
+              "shifts both, and the hook would resolve its ancestor accounts from whatever bytes",
+              "now sit at those offsets — silently, at transfer time, with no compile error.",
+              "",
+              "Added for docs/ROADMAP.md 0.12. Without it there was nothing to check `attenuate`'s",
+              "`wrapped_mint` against: the mint authority for every deployment is the same",
+              "`program_authority` PDA, and `TOKEN_ACCOUNT_SEED` contains no mint either, so a",
+              "capability issued against a worthless mint could mint children of the *real* one."
             ],
             "type": "pubkey"
           },

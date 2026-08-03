@@ -13,6 +13,7 @@ const CAPABILITY_ACCOUNT_SIZE =
   32 + // parent
   32 * MAX_DEPTH + // ancestors
   32 + // token_account
+  32 + // wrapped_mint (docs/ROADMAP.md 0.12)
   8 * 4 + // cap, spent, committed_to_children, expiry
   (4 + 32 * MAX_ALLOWLIST_LEN) + // allowlist Vec<Pubkey>
   1 + // revoked

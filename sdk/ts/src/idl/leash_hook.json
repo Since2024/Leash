@@ -142,6 +142,11 @@
       "code": 6005,
       "name": "WrongTokenAccount",
       "msg": "source account is not this capability's token account"
+    },
+    {
+      "code": 6006,
+      "name": "WrongMint",
+      "msg": "transfer's mint is not the one this capability was issued against"
     }
   ]
 }

@@ -148,6 +148,11 @@ export type LeashHook = {
       "code": 6005,
       "name": "wrongTokenAccount",
       "msg": "source account is not this capability's token account"
+    },
+    {
+      "code": 6006,
+      "name": "wrongMint",
+      "msg": "transfer's mint is not the one this capability was issued against"
     }
   ]
 };

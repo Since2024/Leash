@@ -6,6 +6,9 @@ export interface CapabilitySnapshot {
   parent: PublicKey;
   ancestors: PublicKey[];
   tokenAccount: PublicKey;
+  /** The wrapped mint this capability was issued against — which deployment's collateral
+   * its units are a claim on (docs/ROADMAP.md 0.12). */
+  wrappedMint: PublicKey;
   cap: bigint;
   spent: bigint;
   committedToChildren: bigint;
@@ -31,6 +34,7 @@ export function decodeCapability(
     parent: decoded.parent,
     ancestors: decoded.ancestors,
     tokenAccount: decoded.tokenAccount,
+    wrappedMint: decoded.wrappedMint,
     cap: BigInt(decoded.cap.toString()),
     spent: BigInt(decoded.spent.toString()),
     committedToChildren: BigInt(decoded.committedToChildren.toString()),
