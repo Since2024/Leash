@@ -47,6 +47,20 @@ pub struct Capability {
     pub ancestors: [Pubkey; ANCESTOR_SLOTS],
     /// The Token-2022 token account holding this capability's spendable balance.
     pub token_account: Pubkey,
+    /// The wrapped mint this capability was issued against — i.e. which deployment's
+    /// collateral its units are a claim on.
+    ///
+    /// **Placed after `token_account`, and that is load-bearing.** leash-hook reads
+    /// `parent` and `ancestors` straight out of raw account bytes at
+    /// `PARENT_FIELD_OFFSET` / `ANCESTORS_FIELD_OFFSET`; a field inserted before them
+    /// shifts both, and the hook would resolve its ancestor accounts from whatever bytes
+    /// now sit at those offsets — silently, at transfer time, with no compile error.
+    ///
+    /// Added for docs/ROADMAP.md 0.12. Without it there was nothing to check `attenuate`'s
+    /// `wrapped_mint` against: the mint authority for every deployment is the same
+    /// `program_authority` PDA, and `TOKEN_ACCOUNT_SEED` contains no mint either, so a
+    /// capability issued against a worthless mint could mint children of the *real* one.
+    pub wrapped_mint: Pubkey,
     /// Total this capability may ever spend (cumulative, not a rolling window).
     pub cap: u64,
     /// Cumulative amount spent so far via the transfer hook's spend path.
@@ -71,6 +85,7 @@ impl Capability {
         + 32 // parent (fixed-size Pubkey, see doc comment — not Option<Pubkey>)
         + (32 * ANCESTOR_SLOTS) // ancestors
         + 32 // token_account
+        + 32 // wrapped_mint
         + 8  // cap
         + 8  // spent
         + 8  // committed_to_children

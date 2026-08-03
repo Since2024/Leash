@@ -155,6 +155,10 @@ pub fn issue_handler(
     capability.parent = Pubkey::default(); // root: no parent (state.rs — not Option<Pubkey>)
     capability.ancestors = [Pubkey::default(); crate::constants::ANCESTOR_SLOTS]; // root: no ancestors
     capability.token_account = ctx.accounts.capability_token_account.key();
+    // Which deployment's collateral these units are a claim on. `attenuate` refuses to
+    // mint children of any other mint (docs/ROADMAP.md 0.12); the vault backing it is
+    // pinned by the `seeds` constraint above (0.11).
+    capability.wrapped_mint = ctx.accounts.wrapped_mint.key();
     capability.cap = cap;
     capability.spent = 0;
     capability.committed_to_children = 0;

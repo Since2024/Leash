@@ -398,3 +398,52 @@ fn a_grandparent_may_revoke_but_only_the_parent_may_reclaim() {
     assert_conserved(&svm, &mid);
     assert_conserved(&svm, &root);
 }
+
+/// Revocation is total: a revoked capability cannot delegate either.
+///
+/// This was unchecked until the docs/ROADMAP.md 0.12 sweep. It was never exploitable — the
+/// child inherits a revoked ancestor and so can never spend, and the reservation lands on
+/// the revoked parent's own counter — but a dead capability could mint fresh units that
+/// nothing would ever be able to use, inflating the wrapped supply against an unchanged
+/// vault and locking its own remaining budget behind a `revoke_descendant` + `reclaim`
+/// round trip. "Revoked" should mean finished.
+#[test]
+fn a_revoked_capability_cannot_attenuate() {
+    let mut svm = LiteSVM::new();
+    let s = setup(&mut svm);
+
+    let principal = Keypair::new();
+    let agent = Keypair::new();
+    expect_ok(issue(&mut svm, &s, &principal, 0, 1_000, FAR_FUTURE, vec![]));
+    let (root, _) = capability_for(&principal.pubkey(), 0);
+
+    // Delegating works right up until the moment it shouldn't.
+    expect_ok(attenuate(
+        &mut svm, &s, &principal, root, &agent, 1, 200, FAR_FUTURE, vec![],
+    ));
+    assert_eq!(capability_state(&svm, &root).committed_to_children, 200);
+
+    expect_ok(revoke(&mut svm, &s, &principal, root));
+
+    let second_agent = Keypair::new();
+    expect_err_code(
+        attenuate(
+            &mut svm, &s, &principal, root, &second_agent, 2, 300, FAR_FUTURE, vec![],
+        ),
+        "attenuating from a revoked capability",
+        E_LEASH_REVOKED,
+    );
+
+    // Nothing moved: no reservation, and no units minted for a child that can never spend.
+    assert_eq!(
+        capability_state(&svm, &root).committed_to_children,
+        200,
+        "a rejected attenuation must not reserve budget"
+    );
+    let (_, second_agent_tokens) = capability_for(&second_agent.pubkey(), 2);
+    assert!(
+        svm.get_account(&second_agent_tokens)
+            .map_or(true, |a| a.data.is_empty()),
+        "a rejected attenuation must not mint anything"
+    );
+}

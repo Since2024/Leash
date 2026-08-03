@@ -219,6 +219,18 @@ fn spend_logic(accounts: &[AccountInfo], amount: u64) -> Result<()> {
         LeashHookError::WrongTokenAccount
     );
 
+    // ...and against the mint it was issued against (docs/ROADMAP.md 0.12). Token-2022's
+    // own `TransferChecked` already requires the mint to match the source account's, and
+    // the source is pinned to the capability just above, so this is implied rather than
+    // load-bearing. It is here because "implied by a check somewhere else" is precisely
+    // how 0.11 and 0.12 both survived review: the implication holds today, costs one
+    // comparison to stop depending on, and makes this function answer "is this spend
+    // legitimate?" without deferring to the token program's internals.
+    require!(
+        accounts[1].key() == capability.wrapped_mint,
+        LeashHookError::WrongMint
+    );
+
     require!(!capability.revoked, LeashHookError::Revoked);
     let now = Clock::get()?.unix_timestamp;
     require!(now <= capability.expiry, LeashHookError::Expired);

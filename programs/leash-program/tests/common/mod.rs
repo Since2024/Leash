@@ -63,6 +63,7 @@ pub fn expect_err(res: Result<(), String>, label: &str) {
 /// Anchor's `#[error_code]` numbers variants from 6000, so a `LeashError` /
 /// `LeashHookError` variant at index N surfaces on-chain as `Custom(6000 + N)`.
 pub const E_LEASH_CAP_EXCEEDED: u32 = 6000; // LeashError::CapExceeded (index 0)
+pub const E_LEASH_REVOKED: u32 = 6003; // LeashError::Revoked (index 3)
 pub const E_LEASH_DEPTH_EXCEEDED: u32 = 6004; // LeashError::DepthExceeded (index 4)
 pub const E_LEASH_UNAUTHORIZED: u32 = 6006; // LeashError::Unauthorized (index 6)
 pub const E_LEASH_DELEGATED_CANNOT_REDEEM: u32 = 6009;

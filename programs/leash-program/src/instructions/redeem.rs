@@ -137,6 +137,16 @@ pub fn redeem_handler(ctx: Context<Redeem>, amount: u64) -> Result<()> {
             LeashError::Unauthorized
         );
 
+        // The capability must be redeeming against its own deployment. Token-2022 would
+        // catch the mismatch anyway when burning from an account of a different mint, so
+        // this is defence in depth rather than the load-bearing check (docs/ROADMAP.md
+        // 0.12) — but it names the failure instead of leaving it as a token-program error
+        // that reads like insufficient funds.
+        require!(
+            capability.wrapped_mint == ctx.accounts.wrapped_mint.key(),
+            LeashError::WrongMint
+        );
+
         // A delegatee never funded the vault, so it has no claim on it. It can still
         // spend through the hook — that path is untouched.
         require!(capability.depth == 0, LeashError::DelegatedCannotRedeem);

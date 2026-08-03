@@ -31,4 +31,6 @@ pub enum LeashError {
     NotAChild,
     #[msg("child is still live; revoke it or wait for expiry before reclaiming")]
     ChildStillLive,
+    #[msg("wrapped mint does not match the one this capability was issued against")]
+    WrongMint,
 }

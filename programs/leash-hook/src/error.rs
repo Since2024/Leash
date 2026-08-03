@@ -14,4 +14,6 @@ pub enum LeashHookError {
     CapExceeded,
     #[msg("source account is not this capability's token account")]
     WrongTokenAccount,
+    #[msg("transfer's mint is not the one this capability was issued against")]
+    WrongMint,
 }

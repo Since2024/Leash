@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_2022::{self as token_2022, MintTo};
+use anchor_spl::token_2022::{self as token_2022, MintTo, Token2022};
 use anchor_spl::token_interface::{Mint, TokenAccount};
 
 use crate::constants::{
@@ -73,8 +73,12 @@ pub struct Attenuate<'info> {
     )]
     pub child_capability: Account<'info, Capability>,
 
-    /// CHECK: Token-2022 program, for minting child_cap wrapped units.
-    pub token_2022_program: UncheckedAccount<'info>,
+    /// Typed, like `issue`'s and `redeem`'s. This one was missed when those two were
+    /// tightened (docs/ROADMAP.md 0.11) and is the same bug class: an unchecked account
+    /// that gets CPI'd into. Not independently exploitable — `spl_token_2022`'s own
+    /// instruction builder rejects a foreign program id — but an inconsistency here is
+    /// exactly the kind of thing that reads as "deliberate" on the next review.
+    pub token_2022_program: Program<'info, Token2022>,
     pub system_program: Program<'info, System>,
 }
 
@@ -92,6 +96,39 @@ pub fn attenuate_handler(
 
     let parent = &ctx.accounts.parent_capability;
     require!(parent.depth < MAX_DEPTH, LeashError::DepthExceeded);
+
+    // A revoked capability is finished, and that should include delegating. This was not
+    // checked, and while it is not exploitable — the child inherits a revoked ancestor and
+    // so can never spend, and the reservation lands on the revoked parent itself — it let
+    // a dead capability mint fresh units that nothing could ever use, inflating supply
+    // against an unchanged vault (docs/ROADMAP.md 0.10's artifact, reached a new way) and
+    // locking the parent's own budget until it walks back through `revoke_descendant` +
+    // `reclaim`.
+    //
+    // Blocking it is strictly more restrictive and costs nothing: `revoked` is one-way, so
+    // a revoked capability has no future in which attenuating is the right thing to do.
+    // Expiry deliberately is *not* checked here — `child_expiry <= parent.expiry` already
+    // forces a child of an expired parent to be born expired, which is harmless and is
+    // immediately reclaimable.
+    require!(!parent.revoked, LeashError::Revoked);
+
+    // A capability may only ever mint children of the mint it was itself issued against
+    // (docs/ROADMAP.md 0.12). Without this the mint below is minted on the strength of
+    // `program_authority` alone — and that PDA is the mint authority for *every*
+    // deployment, because it is seeded `[AUTHORITY_SEED]` with nothing else in it. So a
+    // capability issued against a worthless mint of the attacker's own creation could
+    // attenuate children of the real one: genuine units, genuine capability, honoured by
+    // the hook, backed by garbage. The vault was drained to zero in a test before this
+    // line existed.
+    //
+    // Note this is checked against the *parent capability's* recorded mint, not against
+    // the child's token account — the child's account is created fresh in this same
+    // instruction with `token::mint = wrapped_mint`, so it agrees with whatever was
+    // passed and can never be the thing that catches a mismatch.
+    require!(
+        parent.wrapped_mint == ctx.accounts.wrapped_mint.key(),
+        LeashError::WrongMint
+    );
 
     let parent_remaining = parent
         .cap
@@ -148,6 +185,9 @@ pub fn attenuate_handler(
     child.parent = parent_key;
     child.ancestors = child_ancestors;
     child.token_account = child_token_account_key;
+    // Equal to the parent's by the check above; carried explicitly so every capability in
+    // a tree names its own deployment rather than requiring a walk to the root.
+    child.wrapped_mint = ctx.accounts.wrapped_mint.key();
     child.cap = child_cap;
     child.spent = 0;
     child.committed_to_children = 0;
