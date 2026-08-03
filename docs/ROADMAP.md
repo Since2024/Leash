@@ -33,10 +33,19 @@ Phase 1 MVP complete: both programs deployed to devnet, full hook enforcement
 end-to-end against a real validator. Nothing on mainnet, and per BUILD_PLAN.md §10 that
 stays true until at minimum Phase 0 and Phase 1 below are closed.
 
-Two of the Phase 0 items below were **critical** — either one, on its own, sufficient to
-lose depositor funds, and both reachable without any unusual behaviour. Both (0.1, 0.2)
-are now fixed, each covered by tests verified to fail without their fix. The remaining
-Phase 0 items are real but none of them lose money on their own.
+Three of the Phase 0 items below were **critical** — each one, on its own, sufficient to
+lose depositor funds, and all three reachable without any unusual behaviour. All three
+(0.1, 0.2, 0.11) are now fixed, each covered by tests verified to fail without their fix.
+The remaining Phase 0 items are real but none of them lose money on their own.
+
+0.11 is the worst of the three and was found last, which is worth stating plainly: it let
+**any** caller drain the entire vault in one instruction, needing no capability, no
+deposit and no prior state — and it survived every previous review, the whole Phase 0
+sweep, and a green suite of 32 tests including a solvency fuzzer. It survived them because
+the test helpers always passed the correct vault and mint, so the harness was quietly
+supplying the binding the program was supposed to enforce. The lesson is narrower than
+"test more": a test that constructs its accounts through a helper can only ever exercise
+the wiring that helper believes in.
 
 0.3 and 0.4 are now fixed too, together: capabilities are keyed on their own token
 account rather than their owner, so one owner can hold many, and the hook checks the
@@ -48,7 +57,7 @@ capabilities) went from theoretical to live, and is now fixed too, via a
 `getProgramAccounts` helper and a `leash list` command. 0.8 is new, surfaced by 0.3: a
 parent cannot revoke one delegation without cutting off all of them.
 
-**Phase 0 now stands at 0.1 through 0.8 done.** 0.7 and 0.8 landed together as
+**Phase 0 now stands at 0.1 through 0.8, plus 0.10 and 0.11, done.** 0.7 and 0.8 landed together as
 `reclaim` + `revoke_descendant`, which is what finally makes "cut this agent off and take
 the money back" expressible — the loop the pitch in `leash.txt` describes and the code
 could not previously perform. 0.10 is addressed by reporting: `redeemableSupply()` computes the real
@@ -584,6 +593,79 @@ spendable as capability budget.
   true today. Do not attempt the transfer redesign as a cleanup; it silently costs a
   feature that took real work to get.
 
+### 0.11 The vault and the wrapped mint were bound to nothing — **critical**
+
+- [x] **Fixed.** Any caller could withdraw the entire vault in a single instruction, with
+      no capability, no deposit, and no prior state. Found by reading the code while
+      writing up the Phase 1 conservation argument below; not inherited from the build
+      plan, and not reachable by any test that existed.
+
+`issue` took `vault`, and `redeem` took both `vault` and `wrapped_mint`, as bare
+`UncheckedAccount`s. Nothing on-chain recorded which vault belonged to which mint —
+because nothing on-chain recorded a vault at all. `createDeployment`
+(`sdk/ts/src/deployment.ts`) generated it as a random keypair account, and the only thing
+relating it to the program was that its token-account authority was the shared
+`program_authority` PDA. Everything else was the caller's choice.
+
+Two ways that cashed out, both draining a third party's deposit:
+
+1. **`redeem` with a counterfeit mint.** Create your own Token-2022 mint, mint yourself a
+   million units, then call `redeem` naming *your* mint as `wrapped_mint` and the *real*
+   vault as `vault`. The burn destroys your worthless token; the payout comes out of the
+   real vault. One instruction, no setup beyond a mint anyone can create permissionlessly.
+2. **`issue` with a substitute vault.** Point the deposit leg at an account you own. The
+   mint leg still runs against the real wrapped mint, so you receive genuine, fully
+   hook-enforced capability budget — a capability indistinguishable from an honestly
+   funded one — which then redeems from the real vault by the ordinary root path.
+
+**The near-miss is the instructive part.** `program_authority` *is* seeds-checked, in both
+instructions, and that looks like it settles the question. It does not. It proves the
+signer is the canonical authority PDA; it says nothing about which token account that PDA
+is being made to sign a withdrawal *from*. And because it is seeded `[AUTHORITY_SEED]`
+alone — no mint, no deployment — one PDA is the authority for every vault the program will
+ever have, so the real vault satisfies the check no matter which mint is being burned. A
+present, correct, load-bearing constraint sat two lines above the hole and did not cover
+it.
+
+Why no existing test could have caught it: the helpers in `tests/common/mod.rs` always
+passed `s.vault` and `s.wrapped_mint`. The harness was supplying the binding the program
+was supposed to enforce, so the suite only ever exercised the honest wiring. Same shape as
+0.4 — a relationship the code documented and never checked — but with money directly on
+the other side of it.
+
+**The fix, as landed.** The vault is now a PDA at `[VAULT_SEED, wrapped_mint]`, created by
+a new `initialize_vault` instruction, and both `issue` and `redeem` constrain it by
+`seeds`. The seeds that say which mint are the seeds that say which vault, so the pair
+cannot be split. `VAULT_SEED` had existed as an unused constant since the first commit,
+which is a fair indication this was always the intent.
+
+Derivation rather than a stored `vault` pubkey on a config account is deliberate, and 0.4
+is the precedent: a stored pubkey is written once at setup and trusted forever, and a
+field nothing re-checks is exactly the kind that quietly stops being true. There is
+nothing to drift here.
+
+`initialize_vault` is permissionless, which is safe because a vault created for your own
+mint is a self-consistent sandbox holding only your own money — theft requires reaching
+the real vault, and that requires the real mint. The one ordering hazard is that whoever
+calls it first for a given mint picks the `deposit_mint`; `createDeployment` now creates
+the mint and claims its vault **in the same transaction**, so there is no moment when the
+mint's address is public and its vault does not yet exist.
+
+Also tightened alongside it, same bug class: `token_program` and `token_2022_program` were
+unchecked accounts that get CPI'd into, and are now `Program<'info, Token>` /
+`Program<'info, Token2022>`. The SPL instruction builders reject a foreign program id
+themselves, so this was not independently exploitable — but an unchecked account that gets
+invoked should not depend on a dependency's internals for its safety.
+
+Covered by `programs/leash-program/tests/deployment_binding.rs`, asserting Anchor's own
+`ConstraintSeeds` (2006) plus, in each case, that no money moved. **Verified to fail
+without the fix**: against the pre-fix binary the counterfeit-mint redemption succeeds
+outright — the program logs show `Instruction: Redeem` → `Burn` → `Transfer` → `success`,
+with the attacker's USDC account credited from the real vault.
+
+**This is a breaking on-chain change** (new instruction, vault address, account order in
+`issue`/`redeem`), on top of the one 0.3 already made. Redeploy, don't upgrade in place.
+
 ---
 
 ## Phase 1 — Assurance
@@ -640,6 +722,25 @@ between a credible primitive and an unrecoverable incident.
       case-by-case inspection of `issue`/`attenuate`/`record_spend`. It deserves an
       explicit proof sketch naming every write path to `cap`, `spent`, and
       `committed_to_children`. 0.2 is what inspection-without-a-written-argument missed.
+
+      **Started, and it paid for itself before producing a single line of prose.** Walking
+      the write paths in order to write this up is what surfaced 0.11: the per-node
+      arithmetic is in fact sound at every one of them, so the eye moves outward to what
+      the numbers are denominated in — and the vault those numbers are claims against
+      turned out not to be identified at all. Worth recording as a method note, because
+      the exercise found the bug from the *opposite* direction to the one intended: not a
+      broken invariant, but a correct invariant measured against an unpinned quantity.
+
+      The per-node argument itself, in the form it should be written up: `issue` and
+      `attenuate` both initialize a node at `spent = committed_to_children = 0`, so the
+      invariant holds trivially at birth; `attenuate`'s increment of the parent is guarded
+      by `child_cap <= cap - spent - committed_to_children`; `record_spend`'s increment is
+      guarded by `new_spent + committed_to_children <= cap`; `reclaim` releases exactly
+      `cap - spent - committed_to_children` and writes `cap` down by the same quantity,
+      leaving equality; `redeem` decrements `cap` by an amount bounded by the same free
+      term; `revoke`/`revoke_descendant` touch none of the three. Every path is
+      `checked_*`. That is six write paths and they all hold — which is precisely why the
+      remaining risk was never here.
 - [ ] **External review.** Non-negotiable before mainnet, and BUILD_PLAN.md §10 already
       says so: "ideally, someone other than the author has read the program." An audit is
       the strong form; a second engineer reading the two programs is the minimum. That

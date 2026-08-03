@@ -49,6 +49,18 @@ enforcement** — cap, expiry, allowlist, revoked, and the entire ancestor chain
   only — it cannot burn the child's units, since that token account's authority is the
   child, not the program (see `reclaim.rs`, and 0.10 for the supply consequence). The
   liveness guard was verified to be load-bearing.
+- `deployment_binding.rs` — post-MVP: proves the vault and the wrapped mint are bound to
+  each other, so neither `issue` nor `redeem` can be pointed at a substitute
+  (docs/ROADMAP.md 0.11, **the most severe bug found so far**). Both took the vault — and
+  `redeem` also the mint — as bare `UncheckedAccount`s, and the vault was a client-generated
+  keypair, so nothing on-chain knew which vault was the real one. Burning a Token-2022 mint
+  you created yourself, while naming the real vault, drained the whole vault in one
+  instruction: no capability, no deposit, no prior state. `program_authority`'s `seeds`
+  check sat two lines away and did not cover it — it proves *who signs*, not *what they
+  sign a withdrawal from*, and it is seeded `[AUTHORITY_SEED]` alone, so one PDA is the
+  authority for every vault the program will ever have. The vault is now a PDA at
+  `[VAULT_SEED, wrapped_mint]` created by `initialize_vault`. Verified to fail without the
+  fix.
 - `multi_capability.rs` — post-MVP: proves one owner can hold **many** capabilities, and
   that they stay independent (budget, spending, revocation). Capabilities used to be
   keyed `[CAPABILITY_SEED, owner]`, so a second `issue`/`attenuate` for the same owner
@@ -121,6 +133,27 @@ worked (`Finished ... in 0.26s`). Force it: `rm -f target/deploy/*.so && touch
 programs/*/src/lib.rs` before rebuilding, and check the `.so` md5 actually changed. This
 cost two debugging cycles; the give-away is a build that finishes suspiciously fast.
 
+**Regenerate the IDL with a bare `anchor build` — never with `--idl`/`--idl-ts`.** Passing
+those flags dies with an unexplained `Error: No such file or directory (os error 2)` right
+after `Running unittests src/lib.rs`. Plain `anchor build` writes to `target/idl/` and
+`target/types/` anyway, which is exactly where those flags were pointing, so the flags
+bought nothing and cost an afternoon. `sdk/ts`'s `generate-idl` script now runs it without
+them.
+
+Two other traps in the same script, both real and both fixed: it had `cd ../../..` (one
+level too far — it landed outside the repo and reported `requires an Anchor workspace`),
+and **anchor-cli must match the `anchor-lang` the programs resolve.** The CLI shells out
+to a generated test to emit the IDL, and the name changed between versions: 1.0.0 looks
+for `__anchor_private_print_idl`, while lang 1.1.2 generates *split* tests
+(`__anchor_private_print_idl_address`, `..._program`, `..._error_<name>`). Check with
+`cargo test -p leash-hook --features idl-build -- --list`; the CLI is now on 1.1.2 via
+`avm use 1.1.2`. A mismatch here is silent in the sense that it never mentions versions —
+you just get the `os error 2` above, which is the same symptom as the flags problem and
+was initially misdiagnosed as the *only* cause.
+
+Never hand-patch the JSON to get out of this; that is what made an earlier attempt at
+ROADMAP 0.3 untrustworthy. A stale IDL surfaces honestly as the SDK failing to typecheck.
+
 Both programs were deployed to **devnet** (`leash-program`:
 `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk`, `leash-hook`:
 `9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`) — nothing on mainnet. **That deployment
@@ -182,8 +215,8 @@ tracked in docs/ROADMAP.md, not here.
 ```
 leash/
   programs/leash-program/
-    src/                      Capability state, issue/attenuate/revoke/revoke_descendant/
-                                reclaim/redeem/record_spend
+    src/                      Capability state, initialize_vault/issue/attenuate/revoke/
+                                revoke_descendant/reclaim/redeem/record_spend
     tests/
       common/mod.rs           Shared test helpers (setup, issue, attenuate, revoke, redeem, spend)
       week2_issue_redeem.rs
@@ -192,6 +225,7 @@ leash/
       conservation_invariant.rs
       redeem_authorization.rs
       multi_capability.rs
+      deployment_binding.rs
       reclaim_and_descendant_revoke.rs
       fuzz_conservation.rs     Randomized instruction sequences (found a real reclaim bug)
   programs/leash-hook/
