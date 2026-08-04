@@ -1,24 +1,8 @@
 import { TOKEN_2022_PROGRAM_ID, getMint } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
-import { MAX_ALLOWLIST_LEN, MAX_DEPTH } from "./constants";
+import { CAPABILITY_ACCOUNT_SIZE } from "./constants";
 import type { LeashPrograms } from "./programs";
 import { type CapabilitySnapshot, decodeCapability } from "./watch";
-
-/** Serialized size of a `Capability`, mirroring `Capability::MAX_SIZE` in `state.rs`.
- * Derived from the same two constants rather than hard-coded, so a change to either is a
- * type-level change here too instead of a silently-wrong `dataSize` filter. */
-const CAPABILITY_ACCOUNT_SIZE =
-  8 + // discriminator
-  32 + // owner
-  32 + // parent
-  32 * MAX_DEPTH + // ancestors
-  32 + // token_account
-  32 + // wrapped_mint (docs/ROADMAP.md 0.12)
-  8 * 4 + // cap, spent, committed_to_children, expiry
-  (4 + 32 * MAX_ALLOWLIST_LEN) + // allowlist Vec<Pubkey>
-  1 + // revoked
-  1 + // depth
-  1; // bump
 
 /** Offset of `amount` in an SPL token account: mint (32) + owner (32). */
 const TOKEN_AMOUNT_OFFSET = 64;

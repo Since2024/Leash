@@ -176,9 +176,41 @@ ROADMAP 0.3 untrustworthy. A stale IDL surfaces honestly as the SDK failing to t
 
 Both programs were deployed to **devnet** (`leash-program`:
 `Gbx7nEL2rxWUTj7LnqRQtBDU7yi8oF3miYmjKGncsDXk`, `leash-hook`:
-`9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`) — nothing on mainnet. **That deployment
-is now stale:** ROADMAP 0.3 changed the instruction ABI (`issue`/`attenuate` take a
-`nonce`, account lists changed), so it needs a redeploy, not an upgrade over live state.
+`9WPQUY6zVRwVZ3eUsDF1aNESWAyZwL8GwKpzd2C66xtS`) — nothing on mainnet. **Both program
+binaries were re-deployed to those same IDs** after ROADMAP 0.11/0.12, and the on-chain
+bytes were verified byte-identical to the locally tested `.so` via `solana program dump`.
+Upgrade authority is `7eysbVq67ZehLwEPv7FpStrvio6G8ZLaizVvcRwdWxYh`.
+
+**The on-chain *state* from Week 6 is orphaned and must not be reused.** 0.3, 0.11 and
+0.12 each changed the ABI or the `Capability` layout, so every capability, vault and
+wrapped mint issued under the old scheme is unreadable by the current programs — two such
+accounts are still sitting on devnet and are the reason `find.ts` now filters on
+`dataSize` (ROADMAP 0.6).
+
+A **fresh deployment** was created and the full loop proven against it:
+
+```
+deposit asset mint : FmJ3DnuLBG61QnJALNA1qyszySomuQWwNiAeVyMLB1sq   (throwaway, 6dp)
+wrapped mint       : FjeV7dtEx4rewdmU6GzvxV7f799seCxMgcRw9EovMLLW
+vault (PDA)        : 7QoxLLrDvEFQSVo1jD4Ywzg2ayzsNvik4J6qipmrPzpm
+program authority  : CQFXccPgyQNiKe4DHG1tk4PcmkXyEAocUkbk5cwUBd9U
+```
+
+`init` → `mint` → `spend` → `list` → `revoke` → `spend` fails on-chain with `Revoked`
+thrown from inside leash-hook during Token-2022's `TransferChecked` → `supply` reporting
+`claimable = 1000` against a vault of exactly `1000`. The vault was independently
+re-derived as `PDA(["vault", wrapped_mint])` and matched, which is 0.11 confirmed on real
+infrastructure rather than argued.
+
+Two operational notes for the next redeploy, both hit here:
+
+- **The `.so` outgrew its ProgramData allocation** (222_376 → 320_528 bytes), and
+  `solana program deploy` does not grow it for you — it fails. Run
+  `solana program extend <program-id> <bytes>` first; the minimum extension is 10_240
+  bytes regardless of how few you need.
+- **Check `solana program show --buffers` before asking for more SOL.** Abandoned deploys
+  strand their upgrade buffers, and this repo had three holding 4.5 SOL — more than the
+  whole deploy cost. `solana program close --buffers` reclaims them.
 
 `sdk/ts/` (`@leash/sdk`) and `cli/` (`@leash/cli`) are real, not stubs — every
 instruction has a typed wrapper, and the full loop (`init` -> `mint` -> `spend` ->

@@ -1,4 +1,5 @@
 import { PublicKey } from "@solana/web3.js";
+import { CAPABILITY_ACCOUNT_SIZE } from "./constants";
 import { capabilityTokenAccountPda } from "./pda";
 import type { LeashPrograms } from "./programs";
 import { type CapabilitySnapshot, decodeCapability } from "./watch";
@@ -53,7 +54,15 @@ export async function findCapabilitiesByOwner(
     programs.leashProgramId,
     {
       commitment: "confirmed",
-      filters: [{ memcmp: { offset: OWNER_OFFSET, bytes: owner.toBase58() } }],
+      // Both filters matter. `memcmp` picks the owner; `dataSize` excludes capabilities
+      // written under an older layout, which would otherwise pass the owner match and
+      // then kill the process inside the decoder rather than throwing — see
+      // CAPABILITY_ACCOUNT_SIZE. Found by running `leash list` against a devnet that
+      // still held two pre-0.12 capabilities.
+      filters: [
+        { dataSize: CAPABILITY_ACCOUNT_SIZE },
+        { memcmp: { offset: OWNER_OFFSET, bytes: owner.toBase58() } },
+      ],
     },
   );
 

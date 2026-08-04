@@ -420,6 +420,21 @@ spendable as capability budget.
       nonce recovered from `list` was then used to `spend`, with the result showing up in
       the next `list`.
 
+- [x] **Fixed later: the scan filtered on `owner` alone and could not survive a layout
+      change.** `leash list` died with a V8 heap-exhaustion crash the first time it ran
+      against a devnet holding capabilities from before 0.12. An owner-offset `memcmp`
+      still matches an account written under an older layout; decoding one reads the
+      `allowlist` length prefix 32 bytes early, lands inside `cap`/`expiry`, and produces a
+      count large enough that the decoder dies allocating it. **The `try`/`catch` already
+      wrapped around the decode does not help** — the process is killed inside the
+      allocation, so nothing is ever thrown to catch.
+
+      Fixed by adding a `dataSize` filter, and by moving `CAPABILITY_ACCOUNT_SIZE` into
+      `constants.ts` as one source of truth — `supply.ts` already had this filter and
+      `find.ts` did not, which is exactly the kind of asymmetry that survives review.
+      Found by running against devnet, not by reading: the stale accounts only exist
+      because a real deployment outlived a layout change, which no local test reproduces.
+
 ### 0.7 Budget reserved for a child is never released back
 
 - [x] **Reconciliation on redeem: fixed as part of 0.1.** Redeeming used to leave `cap`
@@ -751,6 +766,23 @@ re-investigated from scratch:
 
 **This is a breaking on-chain change** — the `Capability` layout grew — on top of 0.3's and
 0.11's. Redeploy, don't upgrade in place.
+
+**Status: deployed to devnet and exercised end to end.** Both binaries are on the same two
+program IDs, verified byte-identical to the tested `.so` via `solana program dump`. A fresh
+deployment was created (the Week 6 state is orphaned by these three ABI changes and stays
+that way), and the full loop was run against it through the CLI: `init` → `mint` → `spend`
+→ `list` → `revoke` → `spend` **fails on-chain** with `Revoked` thrown from inside
+leash-hook during Token-2022's own transfer → `supply` reporting `claimable = 1000` against
+a vault of exactly `1000`.
+
+0.11 was confirmed on real infrastructure rather than assumed: the vault address the CLI
+reported was independently re-derived as `PDA(["vault", wrapped_mint])` and matched, and
+the on-chain account holds the deposit mint under `program_authority`.
+
+The run earned its keep by finding a real bug that no local test could produce — see the
+`leash list` heap-exhaustion entry under 0.6. It needed a deployment that had outlived a
+layout change, which only exists on a real network. See CLAUDE.md for the two operational
+traps the deploy itself hit.
 
 ---
 
