@@ -43,13 +43,6 @@ use anchor_lang::prelude::Pubkey;
 
 const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01
 
-/// `spl_tlv_account_resolution::error::AccountResolutionError::IncorrectAccount`. Raised
-/// by `ExtraAccountMetaList::check_account_infos`, which Token-2022 runs *before* handing
-/// control to the hook — so this code arriving is the proof that the validation happened
-/// upstream and `spend_logic` was never reached. A leash-hook error here would mean the
-/// opposite: that the substituted account got as far as our own logic.
-const E_RESOLUTION_INCORRECT_ACCOUNT: u32 = 2_724_315_840;
-
 /// A spend built exactly like `common::spend`, except that after the extra accounts are
 /// resolved, every occurrence of `swap_from` in the account list is rewritten to
 /// `swap_to`. That is the whole experiment: identical transaction, one account changed.

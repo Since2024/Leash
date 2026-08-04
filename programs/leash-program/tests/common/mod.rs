@@ -109,6 +109,37 @@ pub fn expect_err_code(res: Result<(), String>, label: &str, code: u32) {
     eprintln!("  (expected {} for {}: {})", needle, label, err);
 }
 
+/// `spl_tlv_account_resolution::error::AccountResolutionError::IncorrectAccount`. Raised by
+/// `ExtraAccountMetaList::check_account_infos`, which Token-2022 runs *before* dispatching
+/// into a transfer hook. Seeing this code is proof that the account list was rejected
+/// upstream and the hook's own logic never ran — a leash-hook error would mean the
+/// opposite.
+pub const E_RESOLUTION_INCORRECT_ACCOUNT: u32 = 2_724_315_840;
+
+/// Asserts a call failed with a specific *non-Anchor* error — a Solana `InstructionError`
+/// variant such as `InvalidAccountData`, which carries no `Custom(N)` code for
+/// `expect_err_code` to match on.
+///
+/// This is the honest middle ground between the two existing helpers. `expect_err` would
+/// accept any failure at all, which is worthless for the fail-closed tests
+/// (`fail_closed.rs`): a transfer with a malformed account list fails for uninteresting
+/// reasons, and that is indistinguishable from the enforcement actually holding. Asserting
+/// the variant name pins *which layer* refused.
+pub fn expect_err_matching(res: Result<(), String>, label: &str, needle: &str) {
+    let err = match res {
+        Ok(()) => panic!("expected {} to fail with {}, but it succeeded", label, needle),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains(needle),
+        "expected {} to fail with {}, but got: {}",
+        label,
+        needle,
+        err
+    );
+    eprintln!("  (expected {} for {}: {})", needle, label, err);
+}
+
 pub fn token_amount(svm: &LiteSVM, pubkey: &Pubkey) -> u64 {
     let data = svm.get_account(pubkey).unwrap().data;
     u64::from_le_bytes(data[64..72].try_into().unwrap())
